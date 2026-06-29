@@ -1,0 +1,27 @@
+MIT License
+
+The HTTP parser (http_parser.c, http_parser.h) is based on
+src/http/ngx_http_parse.c from NGINX, Copyright Igor Sysoev. Additional changes
+are Copyright Joyent, Inc. and other Node contributors. The Xapiand additions
+(the enum.h-based enums in http_parser_enums.h, the extra request methods, and
+the std::format support) are Copyright (c) 2015-2019 Dubalu LLC. The standalone
+extraction wiring (CMakeLists.txt, likely.h, tests, docs) is Copyright (c)
+2015-2019 Dubalu LLC.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
