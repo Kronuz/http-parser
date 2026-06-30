@@ -132,3 +132,13 @@ self-contained copy (dropping Xapiand's `config.h` coupling), and the
 implementation file was renamed `http_parser.c` -> `http_parser.cc`. No parser
 logic changed; any edit here should stay reconcilable with upstream as a plain
 diff.
+
+Consumed by [Kronuz/http](https://github.com/Kronuz/http) (the HTTP application
+layer): it parses with this fork rather than a stricter parser like llhttp because
+this one accepts arbitrary request methods, which Xapiand's custom REST verbs
+(`COUNT`, `INFO`, `DUMP`, `RESTORE`, …) require.
+
+**Planned refresh (separate commit):** the fork is pinned at version 2.7.1; the
+Joyent upstream's final release is 2.9.4. A future change rebases the fork onto
+2.9.4 to pick up ~2.5 years of security/correctness fixes, re-applying the small
+extraction deltas above. Keep edits reconcilable so that rebase stays a plain diff.
