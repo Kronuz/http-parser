@@ -355,61 +355,18 @@ int http_message_needs_eof(const http_parser *parser);
 const char* find_crlf(const char* p, const char* data, size_t len);
 
 
-#ifdef __SSE2__
-
-#include <emmintrin.h>
-
-const char* find_crlf(const char* p, const char* data, size_t len) {
-  const char* lastp = MIN(data+len, HTTP_MAX_HEADER_SIZE+p);
-
-  int32_t result = 0;
-  __m128i v1, v2;
-  __m128i vCR = _mm_set_epi32(0x0a0a0a0a, 0x0a0a0a0a,0x0a0a0a0a, 0x0a0a0a0a); // [ c, 0, 0, 0, 0, 0 .. 0 ]
-
-  __m128i vLF = _mm_set_epi32(0x0d0d0d0d, 0x0d0d0d0d,0x0d0d0d0d, 0x0d0d0d0d); // [ c, 0, 0, 0, 0, 0 .. 0 ]
-
-  size_t alignment = (long)p & 15;
-  p -= alignment;
-
-  v1 = *((__m128i*)(p));
-  v2 = _mm_cmpeq_epi8(vCR, v1);
-  v1 = _mm_cmpeq_epi8(vLF, v1);
-  v2 = _mm_or_si128(v1, v2);
-  result = _mm_movemask_epi8(v2);
-
-  v1 = *((__m128i*)(p + 16));
-  v2 = _mm_cmpeq_epi8(vCR, v1);
-  v1 = _mm_cmpeq_epi8(vLF, v1);
-  v2 = _mm_or_si128(v1, v2);
-  result = (_mm_movemask_epi8(v2) << 16 ) | result;
-  result = (result >> alignment) << alignment;
-
-  if ( !result ) {
-    while( !result && lastp >= (p+32) ) {
-      p += 32;
-      v1 = *((__m128i*)(p));
-      v2 = _mm_cmpeq_epi8(vCR, v1);
-      v1 = _mm_cmpeq_epi8(vLF, v1);
-      v2 = _mm_or_si128(v1, v2);
-      result = _mm_movemask_epi8(v2);
-
-      v1 = *((__m128i*)(p+16));
-      v2 = _mm_cmpeq_epi8(vCR, v1);
-      v1 = _mm_cmpeq_epi8(vLF, v1);
-      v2 = _mm_or_si128(v1, v2);
-      result = (_mm_movemask_epi8(v2) << 16 ) | result;
-    }
-    if ( !result ) { return data+len; }
-  }
-  p += __builtin_ctz(result);
-  if ( p >= lastp ) {
-    return data+len;
-  }
-  return p;
-}
-
-#else
-
+// find_crlf: fast-forward to the next CR or LF (whichever comes first) within the
+// header-size limit, or return data+len if neither is present. memchr is bounded
+// by the bytes actually available and, on every platform we target, lowers to a
+// SIMD scan inside libc, so this is both correct and fast.
+//
+// A hand-rolled SSE2 variant used to live here behind #ifdef __SSE2__. It read
+// whole 16-byte aligned vectors, including one at p+16 that ran past data+len.
+// The read is page-aligned so it never faults in production, but it is a genuine
+// out-of-bounds read (undefined behavior) that AddressSanitizer flags, and it
+// only compiled on x86 where __SSE2__ is defined. non-x86 builds already used
+// this scalar path, so dropping the SSE2 hand-roll makes every arch share one
+// correct implementation and shrinks the delta ahead of the upstream refresh.
 const char* find_crlf(const char* p, const char* data, size_t len) {
   const char* p_cr;
   const char* p_lf;
@@ -431,8 +388,6 @@ const char* find_crlf(const char* p, const char* data, size_t len) {
   }
   return p;
 }
-
-#endif
 
 /* Our URL parser.
  *

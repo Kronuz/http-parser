@@ -321,6 +321,44 @@ static void test_keep_alive() {
 }
 
 
+// ---------------------------------------------------------------------------
+// Header-value scan at the exact end of a heap buffer. The header-value parser
+// fast-forwards through the value with find_crlf(); feeding a request in a
+// buffer sized to the byte exactly (no trailing NUL, no slack) puts an ASAN
+// redzone immediately after the last byte, so any read past data+len in that
+// scan is caught. Guards the find_crlf out-of-bounds regression.
+// ---------------------------------------------------------------------------
+
+static void test_header_scan_at_buffer_end() {
+	// A long header value so the value scan spans several words, with the
+	// terminating CRLF (and the final blank line) landing at the buffer end.
+	std::string req =
+		"GET /x HTTP/1.1\r\n"
+		"X-Long: ";
+	req.append(64, 'a');
+	req += "\r\n\r\n";
+
+	char* buf = new char[req.size()];  // exact size: ASAN poisons right after
+	std::memcpy(buf, req.data(), req.size());
+
+	http_parser parser;
+	http_parser_init(&parser, HTTP_REQUEST);
+	Collected c;
+	parser.data = &c;
+	http_parser_settings settings = make_settings();
+	size_t parsed = http_parser_execute(&parser, &settings, buf, req.size());
+
+	assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK);
+	assert(parsed == req.size());
+	assert(c.headers_complete && c.message_complete);
+	const std::string* v = find_header(c, "X-Long");
+	assert(v && *v == std::string(64, 'a'));
+
+	delete[] buf;
+	std::printf("http_parser header scan at buffer end OK: no over-read past data+len\n");
+}
+
+
 int main() {
 	test_simple_get();
 	test_post_with_body();
@@ -328,6 +366,7 @@ int main() {
 	test_chunked_across_buffers();
 	test_malformed_request();
 	test_keep_alive();
+	test_header_scan_at_buffer_end();
 	std::printf("all http-parser tests passed\n");
 	return 0;
 }
