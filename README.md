@@ -1,5 +1,7 @@
 # http-parser
 
+[![CI](https://github.com/Kronuz/http-parser/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/http-parser/actions/workflows/ci.yml)
+
 A streaming HTTP/1.x request and response parser for C++20. Extracted from
 [Xapiand](https://github.com/Kronuz/Xapiand).
 
