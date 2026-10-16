@@ -16,7 +16,9 @@ test/test.cc          Runnable smoke test: GET, POST+body, byte-by-byte streamin
 examples/demo.cc      A runnable tour (not a test).
 CMakeLists.txt        STATIC library `http_parser` (+ alias http_parser::http_parser); FetchContent enum-reflection; CTest test `http_parser`.
 LICENSE               MIT. NGINX/Joyent for the parser; Dubalu LLC for the Xapiand additions and extraction wiring.
-README.md             What it is, install, usage, API.
+README.md             What it is, install, quick start.
+docs/API.md           The API reference and callback rules.
+docs/http-parser.d2   The README diagram's source (docs/http-parser.svg is rendered from it).
 ARCHITECTURE.md       Internal design of the streaming state machine, callbacks, body handling, enums.
 ```
 
