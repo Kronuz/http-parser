@@ -25,6 +25,7 @@ FetchContent_MakeAvailable(enum_reflection)
 # Joyent parser uses enum casts that are already C++-valid). The implementation
 # keeps its upstream content but takes a .cc extension so the C++ compile is
 # first-class rather than relying on the deprecated "compile .c as C++" path.
+# Consumers rebuild with the public parser structure when its policies change.
 add_library(http_parser http_parser.cc)
 target_include_directories(http_parser PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(http_parser PUBLIC cxx_std_20)

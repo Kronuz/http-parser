@@ -359,6 +359,60 @@ static void test_header_scan_at_buffer_end() {
 }
 
 
+static void test_equal_content_lengths() {
+	const auto parse = [](http_parser_type type, const std::string& headers,
+						  bool enabled, bool accepted) {
+		const std::string wire = (type == HTTP_REQUEST ?
+			"POST / HTTP/1.1\r\n" : "HTTP/1.1 200 OK\r\n") + headers + "\r\nabc";
+		for (std::size_t split = 0; split <= wire.size(); ++split) {
+			http_parser parser{};
+			http_parser_init(&parser, type);
+			http_parser_set_allow_equal_content_length(&parser, enabled);
+			Collected collected;
+			parser.data = &collected;
+			auto settings = make_settings();
+			const auto first = http_parser_execute(&parser, &settings, wire.data(), split);
+			std::size_t second = 0;
+			if (HTTP_PARSER_ERRNO(&parser) == HPE_OK)
+				second = http_parser_execute(&parser, &settings, wire.data() + split, wire.size() - split);
+			if (accepted) {
+				assert(first + second == wire.size());
+				assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK);
+				assert(collected.message_complete && collected.body == "abc");
+			} else {
+				assert(HTTP_PARSER_ERRNO(&parser) != HPE_OK);
+				assert(!collected.message_complete && collected.body.empty());
+			}
+		}
+	};
+	for (auto type : {HTTP_REQUEST, HTTP_RESPONSE}) {
+		parse(type, "Content-Length: 3\r\n", false, true);
+		for (const auto* headers : {
+			"Content-Length: 3\r\nContent-Length: 3\r\n",
+			"Content-Length: 03\r\ncontent-length: 3\r\nContent-Length: 003\r\n"}) {
+			parse(type, headers, false, false);
+			parse(type, headers, true, true);
+		}
+		for (const auto* headers : {
+			"Content-Length: 3\r\nContent-Length: 4\r\n",
+			"Content-Length: 3\r\nContent-Length: 18446744073709551616\r\n",
+			"Content-Length: 3\r\nContent-Length: 3,3\r\n",
+			"Content-Length: 3\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n",
+			"Content-Length: 3\r\n 3\r\n"}) {
+			parse(type, headers, false, false);
+			parse(type, headers, true, false);
+		}
+		parse(type, "Content-Length: 3\r\nContent-Length:\r\n", true, false);
+	}
+	http_parser parser{};
+	http_parser_init(&parser, HTTP_RESPONSE);
+	http_parser_set_allow_equal_content_length(&parser, 1);
+	assert(parser.allow_equal_content_length);
+	http_parser_init(&parser, HTTP_RESPONSE);
+	assert(!parser.allow_equal_content_length);
+	std::printf("http_parser equal Content-Length policy and split boundaries OK\n");
+}
+
 int main() {
 	test_simple_get();
 	test_post_with_body();
@@ -367,6 +421,7 @@ int main() {
 	test_malformed_request();
 	test_keep_alive();
 	test_header_scan_at_buffer_end();
+	test_equal_content_lengths();
 	std::printf("all http-parser tests passed\n");
 	return 0;
 }

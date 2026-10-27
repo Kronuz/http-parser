@@ -135,6 +135,11 @@ struct http_parser {
 
   /** PUBLIC **/
   void *data; /* A pointer to get hook to the "connection" or "socket" object */
+
+  /** PRIVATE: equal-length compatibility policy and current duplicate. **/
+  uint64_t previous_content_length;
+  unsigned int allow_equal_content_length : 1;
+  unsigned int duplicate_content_length : 1;
 };
 
 
@@ -198,6 +203,9 @@ struct http_parser_url {
 unsigned long http_parser_version(void);
 
 void http_parser_init(http_parser *parser, enum http_parser_type type);
+
+/* Set after init, before parsing. Conflicting lengths remain errors. */
+void http_parser_set_allow_equal_content_length(http_parser *parser, int enabled);
 
 
 /* Initialize http_parser_settings members to 0

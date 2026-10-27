@@ -77,6 +77,8 @@ is the library's only external dependency. The implementation's other include,
 
 ## Load-bearing invariants
 
+- Equal Content-Length compatibility is per parser and opt-in. Initialization restores default duplicate rejection. Preserve numeric equality across fragmented/repeated fields without relaxing conflicting lengths or TE/CL rejection. The added state requires matching headers and compiled implementation across a coordinated rebuild.
+
 - **The data callbacks can fire more than once per logical value.** `on_url`,
   `on_header_field`, `on_header_value`, and `on_body` each deliver slices of the
   caller's buffer and may be called repeatedly as a run straddles buffer

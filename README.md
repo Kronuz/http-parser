@@ -72,6 +72,8 @@ int main() {
 [`examples/demo.cc`](examples/demo.cc) parses a POST, re-parses it byte by byte,
 and shows the error for a malformed request.
 
+Clients needing repeated equal Content-Length compatibility can call `http_parser_set_allow_equal_content_length(&parser, 1)` after initialization. Default duplicate rejection stays unchanged; conflicts and chunked/length ambiguity remain errors. The added state requires rebuilding consumers and the library together. See [the API contract](docs/API.md).
+
 ## 🎯 When to use it
 
 - ✅ An HTTP/1.x server or client loop that reads from sockets in arbitrary
