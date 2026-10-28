@@ -413,6 +413,45 @@ static void test_equal_content_lengths() {
 	std::printf("http_parser equal Content-Length policy and split boundaries OK\n");
 }
 
+static void test_chunk_extension_controls() {
+	auto parse = [](http_parser_type type, const std::string &chunks, bool accepted,
+	                const std::string &expected_body) {
+		const std::string wire = (type == HTTP_REQUEST
+		    ? "POST / HTTP/1.1\r\nHost: localhost\r\n"
+		    : "HTTP/1.1 200 OK\r\n") + std::string("Transfer-Encoding: chunked\r\n\r\n") + chunks;
+		for (std::size_t split = 0; split <= wire.size(); ++split) {
+			Collected collected;
+			http_parser parser{};
+			parser.data = &collected;
+			http_parser_init(&parser, type);
+			auto settings = make_settings();
+			const auto first = http_parser_execute(&parser, &settings, wire.data(), split);
+			std::size_t second = 0;
+			if (HTTP_PARSER_ERRNO(&parser) == HPE_OK)
+				second = http_parser_execute(&parser, &settings, wire.data() + split, wire.size() - split);
+			if (accepted) {
+				assert(first + second == wire.size() && HTTP_PARSER_ERRNO(&parser) == HPE_OK);
+				assert(collected.message_complete && collected.body == expected_body);
+			} else {
+				assert(HTTP_PARSER_ERRNO(&parser) != HPE_OK && !collected.message_complete);
+			}
+		}
+	};
+	for (auto type : {HTTP_REQUEST, HTTP_RESPONSE}) {
+		parse(type, "1;foo=bar\r\na\r\n0\r\n\r\n", true, "a");
+		parse(type, "1;foo=\"a\tb\"\r\na\r\n0\r\n\r\n", true, "a");
+		for (unsigned byte : {128, 255})
+			parse(type, "1;foo=\"" + std::string(1, static_cast<char>(byte)) + "\"\r\na\r\n0\r\n\r\n", true, "a");
+		parse(type, "1;foo=bar\r\n" + std::string(1, '\0') + "\r\n0\r\n\r\n", true, std::string(1, '\0'));
+		for (unsigned byte = 0; byte <= 127; ++byte) {
+			if ((byte >= 32 && byte != 127) || byte == '\t') continue;
+			const auto extension = ";foo=bar" + std::string(1, static_cast<char>(byte)) + "ignored\r\n";
+			parse(type, "1" + extension + "a\r\n0\r\n\r\n", false, {});
+			parse(type, "1\r\na\r\n0" + extension + "\r\n", false, {});
+		}
+	}
+}
+
 int main() {
 	test_simple_get();
 	test_post_with_body();
@@ -422,6 +461,7 @@ int main() {
 	test_keep_alive();
 	test_header_scan_at_buffer_end();
 	test_equal_content_lengths();
+	test_chunk_extension_controls();
 	std::printf("all http-parser tests passed\n");
 	return 0;
 }

@@ -6,6 +6,8 @@ The core entry points (full declarations in `http_parser.h`):
 
 This addition enlarges `http_parser` state. Rebuild all consumers with matching headers and implementation; mixing binary revisions is unsupported.
 
+Chunk extensions reject embedded control bytes, including bare LF, NUL and DEL. HTAB and quoted high-byte text remain accepted. Chunk bodies retain their binary contents.
+
 - **`http_parser_init(http_parser* p, enum http_parser_type t)`** — reset a parser
   for `HTTP_REQUEST`, `HTTP_RESPONSE`, or `HTTP_BOTH`. Preserves `p->data`.
 - **`http_parser_settings_init(http_parser_settings* s)`** — zero the callback

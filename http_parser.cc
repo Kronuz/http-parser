@@ -1908,10 +1908,13 @@ header_field_begin:
       case s_chunk_parameters:
       {
         assert(parser->flags & F_CHUNKED);
-        /* just ignore this shit. TODO check for overflow */
         if (ch == CR) {
           UPDATE_STATE(s_chunk_size_almost_done);
           break;
+        }
+        if (((unsigned char) ch < 0x20 && ch != '\t') || (unsigned char) ch == 0x7f) {
+          SET_ERRNO(HPE_INVALID_CHUNK_SIZE);
+          goto error;
         }
         break;
       }
