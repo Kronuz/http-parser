@@ -419,16 +419,23 @@ static void test_chunk_extension_controls() {
 		const std::string wire = (type == HTTP_REQUEST
 		    ? "POST / HTTP/1.1\r\nHost: localhost\r\n"
 		    : "HTTP/1.1 200 OK\r\n") + std::string("Transfer-Encoding: chunked\r\n\r\n") + chunks;
-		for (std::size_t split = 0; split <= wire.size(); ++split) {
+		for (std::size_t split = 0; split <= wire.size() + 1; ++split) {
 			Collected collected;
 			http_parser parser{};
 			parser.data = &collected;
 			http_parser_init(&parser, type);
 			auto settings = make_settings();
-			const auto first = http_parser_execute(&parser, &settings, wire.data(), split);
-			std::size_t second = 0;
-			if (HTTP_PARSER_ERRNO(&parser) == HPE_OK)
-				second = http_parser_execute(&parser, &settings, wire.data() + split, wire.size() - split);
+			std::size_t first = 0, second = 0;
+			if (split == wire.size() + 1) {
+				for (std::size_t offset = 0; offset < wire.size(); ++offset) {
+					first += http_parser_execute(&parser, &settings, wire.data() + offset, 1);
+					if (HTTP_PARSER_ERRNO(&parser) != HPE_OK) break;
+				}
+			} else {
+				first = http_parser_execute(&parser, &settings, wire.data(), split);
+				if (HTTP_PARSER_ERRNO(&parser) == HPE_OK)
+					second = http_parser_execute(&parser, &settings, wire.data() + split, wire.size() - split);
+			}
 			if (accepted) {
 				assert(first + second == wire.size() && HTTP_PARSER_ERRNO(&parser) == HPE_OK);
 				assert(collected.message_complete && collected.body == expected_body);
