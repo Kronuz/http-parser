@@ -294,6 +294,62 @@ static const uint8_t normal_url_char[32] = {
 
 #define STRICT_TOKEN(c)     (tokens[(unsigned char)c])
 
+static int advance_chunk_extension(http_parser* parser, unsigned char ch) {
+  const bool whitespace = ch == ' ' || ch == '\t';
+  switch (parser->header_state) {
+    case h_chunk_separator:
+      if (whitespace) return 0;
+      if (ch == ';') { parser->header_state = h_chunk_name_start; return 0; }
+      return -1;
+    case h_chunk_name_start:
+      if (whitespace) return 0;
+      if (STRICT_TOKEN(ch)) { parser->header_state = h_chunk_name; return 0; }
+      return -1;
+    case h_chunk_name:
+      if (STRICT_TOKEN(ch)) return 0;
+      if (whitespace) { parser->header_state = h_chunk_name_bws; return 0; }
+      if (ch == '=') { parser->header_state = h_chunk_value_start; return 0; }
+      if (ch == ';') { parser->header_state = h_chunk_name_start; return 0; }
+      return ch == CR ? 1 : -1;
+    case h_chunk_name_bws:
+      if (whitespace) return 0;
+      if (ch == '=') { parser->header_state = h_chunk_value_start; return 0; }
+      if (ch == ';') { parser->header_state = h_chunk_name_start; return 0; }
+      return -1;
+    case h_chunk_value_start:
+      if (whitespace) return 0;
+      if (ch == '"') { parser->header_state = h_chunk_value_quoted; return 0; }
+      if (STRICT_TOKEN(ch)) { parser->header_state = h_chunk_value_token; return 0; }
+      return -1;
+    case h_chunk_value_token:
+      if (STRICT_TOKEN(ch)) return 0;
+      if (whitespace) { parser->header_state = h_chunk_value_bws; return 0; }
+      if (ch == ';') { parser->header_state = h_chunk_name_start; return 0; }
+      return ch == CR ? 1 : -1;
+    case h_chunk_value_quoted:
+      if (ch == '"') { parser->header_state = h_chunk_value_end; return 0; }
+      if (ch == '\\') { parser->header_state = h_chunk_value_escape; return 0; }
+      return ch == '\t' || ch == ' ' || ch == '!' ||
+          (ch >= 0x23 && ch <= 0x5b) || (ch >= 0x5d && ch <= 0x7e) || ch >= 0x80 ? 0 : -1;
+    case h_chunk_value_escape:
+      if (ch == '\t' || (ch >= 0x20 && ch != 0x7f)) {
+        parser->header_state = h_chunk_value_quoted;
+        return 0;
+      }
+      return -1;
+    case h_chunk_value_end:
+      if (whitespace) { parser->header_state = h_chunk_value_bws; return 0; }
+      if (ch == ';') { parser->header_state = h_chunk_name_start; return 0; }
+      return ch == CR ? 1 : -1;
+    case h_chunk_value_bws:
+      if (whitespace) return 0;
+      if (ch == ';') { parser->header_state = h_chunk_name_start; return 0; }
+      return -1;
+    default:
+      return -1;
+  }
+}
+
 #if HTTP_PARSER_STRICT
 #define TOKEN(c)            (tokens[(unsigned char)c])
 #define IS_URL_CHAR(c)      (BIT_AT(normal_url_char, (unsigned char)c))
@@ -1882,7 +1938,8 @@ header_field_begin:
         unhex_val = unhex[(unsigned char)ch];
 
         if (unhex_val == -1) {
-          if (ch == ';' || ch == ' ') {
+          if (ch == ';' || ch == ' ' || ch == '\t') {
+            parser->header_state = ch == ';' ? h_chunk_name_start : h_chunk_separator;
             UPDATE_STATE(s_chunk_parameters);
             break;
           }
@@ -1908,11 +1965,12 @@ header_field_begin:
       case s_chunk_parameters:
       {
         assert(parser->flags & F_CHUNKED);
-        if (ch == CR) {
+        const int result = advance_chunk_extension(parser, (unsigned char) ch);
+        if (result == 1) {
           UPDATE_STATE(s_chunk_size_almost_done);
           break;
         }
-        if (((unsigned char) ch < 0x20 && ch != '\t') || (unsigned char) ch == 0x7f) {
+        if (result < 0) {
           SET_ERRNO(HPE_INVALID_CHUNK_SIZE);
           goto error;
         }

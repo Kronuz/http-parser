@@ -330,6 +330,16 @@ ENUM(header_states,
   , h_connection_keep_alive
   , h_connection_close
   , h_connection_upgrade
+  , h_chunk_separator
+  , h_chunk_name_start
+  , h_chunk_name
+  , h_chunk_name_bws
+  , h_chunk_value_start
+  , h_chunk_value_token
+  , h_chunk_value_quoted
+  , h_chunk_value_escape
+  , h_chunk_value_end
+  , h_chunk_value_bws
 )
 
 ENUM(http_host_state,

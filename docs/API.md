@@ -8,6 +8,8 @@ This addition enlarges `http_parser` state. Rebuild all consumers with matching 
 
 Chunk extensions reject embedded control bytes, including bare LF, NUL and DEL. HTAB and quoted high-byte text remain accepted. Chunk bodies retain their binary contents.
 
+Extension names and unquoted values use tokens; quoted values support quoted pairs and require a closing quote. Bad whitespace is accepted at the separator and assignment boundaries defined by [RFC 9112 section 7.1.1](https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1.1). The existing parser scratch state carries validation across input fragments without accumulating extension strings.
+
 - **`http_parser_init(http_parser* p, enum http_parser_type t)`** — reset a parser
   for `HTTP_REQUEST`, `HTTP_RESPONSE`, or `HTTP_BOTH`. Preserves `p->data`.
 - **`http_parser_settings_init(http_parser_settings* s)`** — zero the callback

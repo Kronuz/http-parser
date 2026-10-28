@@ -439,6 +439,15 @@ static void test_chunk_extension_controls() {
 	};
 	for (auto type : {HTTP_REQUEST, HTTP_RESPONSE}) {
 		parse(type, "1;foo=bar\r\na\r\n0\r\n\r\n", true, "a");
+		for (const auto *extension : {";=bad", ";", ";name=", ";name=\"unterminated",
+		     ";name=\"bad\\", ";name=\"ok\"junk", ";name=foo bar", ";name=a=b",
+		     ";name=(bad)", ";name=token;", ";name ", ";name=token ", " "}) {
+			parse(type, "1" + std::string(extension) + "\r\na\r\n0\r\n\r\n", false, {});
+			parse(type, "1\r\na\r\n0" + std::string(extension) + "\r\n\r\n", false, {});
+		}
+		for (const auto *extension : {";flag", ";name=token;next", ";name=\"\"",
+		     "\t; name \t= \t\"a\\\"b\";next", ";name=\"a\\\\b\""})
+			parse(type, "1" + std::string(extension) + "\r\na\r\n0;end=yes\r\n\r\n", true, "a");
 		parse(type, "1;foo=\"a\tb\"\r\na\r\n0\r\n\r\n", true, "a");
 		for (unsigned byte : {128, 255})
 			parse(type, "1;foo=\"" + std::string(1, static_cast<char>(byte)) + "\"\r\na\r\n0\r\n\r\n", true, "a");
