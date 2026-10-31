@@ -49,4 +49,29 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   # A runnable tour of the library (not a test): build & run ./build/http_parser_demo
   add_executable(http_parser_demo examples/demo.cc)
   target_link_libraries(http_parser_demo PRIVATE http_parser)
+
+  # Differential test: the parser against test/http_parser_old.cc, a frozen copy
+  # taken before the bulk-scan paths, over a corpus, mutations and random messages.
+  add_executable(http_parser_diff test/diff.cc test/http_parser_old.cc)
+  target_include_directories(http_parser_diff PRIVATE test)
+  target_link_libraries(http_parser_diff PRIVATE http_parser)
+  add_test(NAME http_parser_diff COMMAND http_parser_diff)
+
+  # A/B benchmark against the frozen copy (and llhttp when installed). Run it under
+  # a quiet machine; see the header of bench/bench.cc.
+  option(HTTP_PARSER_BUILD_BENCH "Build the A/B benchmark" OFF)
+  if(HTTP_PARSER_BUILD_BENCH)
+    add_executable(http_parser_bench bench/bench.cc test/http_parser_old.cc)
+    target_include_directories(http_parser_bench PRIVATE test bench)
+    target_link_libraries(http_parser_bench PRIVATE http_parser)
+    find_path(LLHTTP_INCLUDE_DIR llhttp.h)
+    find_library(LLHTTP_LIBRARY llhttp)
+    if(LLHTTP_INCLUDE_DIR AND LLHTTP_LIBRARY)
+      # llhttp.h and http_parser.h define the same names, so it gets its own source file.
+      target_sources(http_parser_bench PRIVATE bench/bench_llhttp.cc)
+      set_source_files_properties(bench/bench_llhttp.cc PROPERTIES INCLUDE_DIRECTORIES "${LLHTTP_INCLUDE_DIR}")
+      target_compile_definitions(http_parser_bench PRIVATE HAVE_LLHTTP)
+      target_link_libraries(http_parser_bench PRIVATE ${LLHTTP_LIBRARY})
+    endif()
+  endif()
 endif()
