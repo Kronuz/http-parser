@@ -29,14 +29,15 @@
 #include <stddef.h>          // for NULL, size_t
 #include <ctype.h>
 #include <stdlib.h>          // for strtoul
-#include <string.h>          // for memset, memchr, memcmp
+#include <string.h>          // for memset, memcmp
 #include <limits.h>          // for ULLONG_MAX
 
 #include "likely.h"          // for likely, unlikely
 
-/* The bulk scan below (the URL run) takes 16 bytes at a time with NEON or SSE2,
- * both baseline on arm64 and x86-64, and never reads outside the span it is
- * given. Define HTTP_PARSER_NO_SIMD to use the byte loop everywhere. */
+/* The bulk scans below (the URL run and the end of a header value) take 16
+ * bytes at a time with NEON or SSE2, both baseline on arm64 and x86-64, and
+ * never read outside the span they are given. Define HTTP_PARSER_NO_SIMD to
+ * use the byte loops everywhere. */
 #if !defined(HTTP_PARSER_NO_SIMD) && defined(__ARM_NEON) && !defined(__ARM_BIG_ENDIAN)
 # include <arm_neon.h>
 # define HTTP_PARSER_NEON 1
@@ -374,38 +375,58 @@ int http_message_needs_eof(const http_parser *parser);
 const char* find_crlf(const char* p, const char* data, size_t len);
 
 
+// scan_crlf: the first CR or LF in [p, end), or end if there is none. Whole 16-byte
+// blocks that lie inside [p, end) go through NEON or SSE2, then a byte loop takes
+// the tail, so no byte outside [p, end) is ever read.
+static inline const char* scan_crlf(const char* p, const char* end) {
+#if defined(HTTP_PARSER_NEON)
+  const uint8x16_t cr = vdupq_n_u8(CR);
+  const uint8x16_t lf = vdupq_n_u8(LF);
+  while (end - p >= 16) {
+    const uint8x16_t v = vld1q_u8((const uint8_t*) p);
+    const uint8x16_t m = vorrq_u8(vceqq_u8(v, cr), vceqq_u8(v, lf));
+    /* narrow to 4 bits per input byte; the lowest set nibble is the first match */
+    const uint64_t bits = vget_lane_u64(
+        vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(m), 4)), 0);
+    if (bits) {
+      return p + (__builtin_ctzll(bits) >> 2);
+    }
+    p += 16;
+  }
+#elif defined(HTTP_PARSER_SSE2)
+  const __m128i cr = _mm_set1_epi8(CR);
+  const __m128i lf = _mm_set1_epi8(LF);
+  while (end - p >= 16) {
+    const __m128i v = _mm_loadu_si128((const __m128i*) p);
+    const unsigned bits = (unsigned) _mm_movemask_epi8(
+        _mm_or_si128(_mm_cmpeq_epi8(v, cr), _mm_cmpeq_epi8(v, lf)));
+    if (bits) {
+      return p + __builtin_ctz(bits);
+    }
+    p += 16;
+  }
+#endif
+  while (p < end) {
+    if (*p == CR || *p == LF) {
+      return p;
+    }
+    ++p;
+  }
+  return end;
+}
+
 // find_crlf: fast-forward to the next CR or LF (whichever comes first) within the
-// header-size limit, or return data+len if neither is present. memchr is bounded
-// by the bytes actually available and, on every platform we target, lowers to a
-// SIMD scan inside libc, so this is both correct and fast.
-//
-// A hand-rolled SSE2 variant used to live here behind #ifdef __SSE2__. It read
-// whole 16-byte aligned vectors, including one at p+16 that ran past data+len.
-// The read is page-aligned so it never faults in production, but it is a genuine
-// out-of-bounds read (undefined behavior) that AddressSanitizer flags, and it
-// only compiled on x86 where __SSE2__ is defined. non-x86 builds already used
-// this scalar path, so dropping the SSE2 hand-roll makes every arch share one
-// correct implementation and shrinks the delta ahead of the upstream refresh.
-const char* find_crlf(const char* p, const char* data, size_t len) {
-  const char* p_cr;
-  const char* p_lf;
+// header-size limit, or return data+len if neither is present. One pass over the
+// bytes. It stays out of line: inlined into http_parser_execute() the vector code
+// costs the state machine's registers and slows every other state down.
+HTTP_PARSER_NOINLINE const char* find_crlf(const char* p, const char* data, size_t len) {
   size_t limit = data + len - p;
+  const char* r;
 
   limit = MIN(limit, HTTP_MAX_HEADER_SIZE);
 
-  p_cr = (const char*) memchr(p, CR, limit);
-  p_lf = (const char*) memchr(p, LF, limit);
-  if (p_cr != NULL) {
-    if (p_lf != NULL && p_cr >= p_lf)
-      p = p_lf;
-    else
-      p = p_cr;
-  } else if unlikely(p_lf != NULL) {
-    p = p_lf;
-  } else {
-    p = data + len;
-  }
-  return p;
+  r = scan_crlf(p, p + limit);
+  return r == p + limit ? data + len : r;
 }
 
 /* skip_url_chars: the first byte in [q, e) that is not a URL character (see
