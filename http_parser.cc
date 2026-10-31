@@ -29,7 +29,7 @@
 #include <stddef.h>          // for NULL, size_t
 #include <ctype.h>
 #include <stdlib.h>          // for strtoul
-#include <string.h>          // for memset, memchr
+#include <string.h>          // for memset, memchr, memcmp
 #include <limits.h>          // for ULLONG_MAX
 
 #include "likely.h"          // for likely, unlikely
@@ -1128,6 +1128,20 @@ reexecute:
       case s_req_http_start:
         switch (ch) {
           case 'H':
+            /* The usual end of a request line, "HTTP/d.d" and its CRLF, in one
+             * step: the same fields, state and header-size count as the
+             * states below leave. Anything else takes the slow path. */
+            if ((data + len) - p >= 10 &&
+                parser->nread + 9 <= HTTP_MAX_HEADER_SIZE &&
+                memcmp(p, "HTTP/", 5) == 0 && p[5] >= '1' && p[5] <= '9' &&
+                p[6] == '.' && IS_NUM(p[7]) && p[8] == CR && p[9] == LF) {
+              parser->http_major = (unsigned short) (p[5] - '0');
+              parser->http_minor = (unsigned short) (p[7] - '0');
+              parser->nread += 9;
+              p += 9;
+              UPDATE_STATE(s_header_field_start);
+              break;
+            }
             UPDATE_STATE(s_req_http_H);
             break;
           case ' ':
