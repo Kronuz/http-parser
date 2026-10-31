@@ -34,6 +34,25 @@
 
 #include "likely.h"          // for likely, unlikely
 
+/* The bulk scan below (the URL run) takes 16 bytes at a time with NEON or SSE2,
+ * both baseline on arm64 and x86-64, and never reads outside the span it is
+ * given. Define HTTP_PARSER_NO_SIMD to use the byte loop everywhere. */
+#if !defined(HTTP_PARSER_NO_SIMD) && defined(__ARM_NEON) && !defined(__ARM_BIG_ENDIAN)
+# include <arm_neon.h>
+# define HTTP_PARSER_NEON 1
+#elif !defined(HTTP_PARSER_NO_SIMD) && defined(__SSE2__)
+# include <emmintrin.h>
+# define HTTP_PARSER_SSE2 1
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+# define HTTP_PARSER_NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+# define HTTP_PARSER_NOINLINE __declspec(noinline)
+#else
+# define HTTP_PARSER_NOINLINE
+#endif
+
 
 #ifndef ULLONG_MAX
 # define ULLONG_MAX ((uint64_t) -1) /* 2^64-1 */
@@ -387,6 +406,56 @@ const char* find_crlf(const char* p, const char* data, size_t len) {
     p = data + len;
   }
   return p;
+}
+
+/* skip_url_chars: the first byte in [q, e) that is not a URL character (see
+ * IS_URL_CHAR), or e. In strict mode the URL characters are 0x21..0x7e except
+ * '#' and '?', which vector code tests in 16-byte blocks that lie inside
+ * [q, e); the table loop takes the tail, and every byte in non-strict mode.
+ * Nothing outside [q, e) is read. */
+HTTP_PARSER_NOINLINE static const char*
+skip_url_chars(const char* q, const char* e)
+{
+#if HTTP_PARSER_STRICT && defined(HTTP_PARSER_NEON)
+  const uint8x16_t lo = vdupq_n_u8(0x21);
+  const uint8x16_t span = vdupq_n_u8(0x5d);
+  const uint8x16_t hash = vdupq_n_u8('#');
+  const uint8x16_t qm = vdupq_n_u8('?');
+  while (e - q >= 16) {
+    const uint8x16_t v = vld1q_u8((const uint8_t*) q);
+    /* (v - 0x21) as unsigned is above 0x5d for bytes below 0x21 and above 0x7e */
+    const uint8x16_t bad = vorrq_u8(
+        vorrq_u8(vcgtq_u8(vsubq_u8(v, lo), span), vceqq_u8(v, hash)),
+        vceqq_u8(v, qm));
+    const uint64_t bits = vget_lane_u64(
+        vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(bad), 4)), 0);
+    if (bits) {
+      return q + (__builtin_ctzll(bits) >> 2);
+    }
+    q += 16;
+  }
+#elif HTTP_PARSER_STRICT && defined(HTTP_PARSER_SSE2)
+  const __m128i lo = _mm_set1_epi8(0x21);
+  const __m128i flip = _mm_set1_epi8((char) 0x80);
+  const __m128i span = _mm_set1_epi8((char) (0x5d ^ 0x80));
+  const __m128i hash = _mm_set1_epi8('#');
+  const __m128i qm = _mm_set1_epi8('?');
+  while (e - q >= 16) {
+    const __m128i v = _mm_loadu_si128((const __m128i*) q);
+    /* SSE2 compares signed bytes: flip the sign bit to order them unsigned */
+    const __m128i out = _mm_cmpgt_epi8(_mm_xor_si128(_mm_sub_epi8(v, lo), flip), span);
+    const unsigned bits = (unsigned) _mm_movemask_epi8(_mm_or_si128(
+        _mm_or_si128(out, _mm_cmpeq_epi8(v, hash)), _mm_cmpeq_epi8(v, qm)));
+    if (bits) {
+      return q + __builtin_ctz(bits);
+    }
+    q += 16;
+  }
+#endif
+  while (q < e && IS_URL_CHAR(*q)) {
+    ++q;
+  }
+  return q;
 }
 
 /* Our URL parser.
@@ -1027,6 +1096,30 @@ reexecute:
             if unlikely(CURRENT_STATE() == s_dead) {
               SET_ERRNO(HPE_INVALID_URL);
               goto error;
+            }
+
+            switch (CURRENT_STATE()) {
+              case s_req_path:
+              case s_req_query_string:
+              case s_req_fragment:
+              {
+                /* In these states every further URL character keeps the state
+                 * as it is, so take the whole run at once. Each byte still
+                 * counts against the header size, and the run stops short of
+                 * the limit so that the byte which crosses it is handled (and
+                 * reported) by the loop above. */
+                const char* q = p + 1;
+                size_t n = (size_t) ((data + len) - q);
+                const size_t room = HTTP_MAX_HEADER_SIZE - parser->nread;
+
+                if (n > room) n = room;
+                q = skip_url_chars(q, q + n);
+                parser->nread += (uint32_t) (q - (p + 1));
+                p = q - 1;
+                break;
+              }
+              default:
+                break;
             }
         }
         break;
