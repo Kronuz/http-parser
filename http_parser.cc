@@ -1700,8 +1700,22 @@ header_field_begin:
 
         COUNT_HEADER_SIZE(p - start);
 
-        if (p == data + len)
+        if (p == data + len) {
           --p;
+        } else if (CURRENT_STATE() == s_header_almost_done &&
+                   (data + len) - p >= 3 &&
+                   parser->nread + 2 <= HTTP_MAX_HEADER_SIZE &&
+                   p[1] == LF) {
+          /* The value ended at a CR (p) that is followed by LF and one more
+           * byte: take both now and let s_header_value_lws look at that byte,
+           * which is what s_header_almost_done and the next pass would do,
+           * with the same header-size count. */
+          parser->nread += 2;
+          p += 2;
+          ch = *p;
+          UPDATE_STATE(s_header_value_lws);
+          REEXECUTE();
+        }
         break;
       }
 
