@@ -9,11 +9,13 @@ include(FetchContent)
 # enum-reflection library, pulled in here so the include resolves. Compiled as
 # C++ (see below), enum.h's ENUM() expands to a real enum plus the reflective
 # constexpr accessors, so the dependency is load-bearing, not just a path fixup.
-# We track its tip with GIT_TAG main, like the rest of the family.
+# Pinned to a commit. FetchContent keeps the first declaration of a name, so this pin also
+# decides constexpr-phf, hashes, static-string and char-classify for a consumer that
+# declares none of them first.
 FetchContent_Declare(
   enum_reflection
   GIT_REPOSITORY https://github.com/Kronuz/enum-reflection.git
-  GIT_TAG        7d394c5ca3d275ca36f6de82e220d1bab9444253
+  GIT_TAG        610203f0892697b766bf6daf9015eb7824dbcaed
 )
 FetchContent_MakeAvailable(enum_reflection)
 

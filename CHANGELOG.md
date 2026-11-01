@@ -70,6 +70,12 @@ callback, its bytes and offset, every return of `http_parser_execute()` and ever
 
 ### Changed
 
+- **enum-reflection is pinned at 610203f** (from 7d394c5), and through it constexpr-phf
+  183081e, hashes ffa2f5c, static-string cfa8127 and char-classify 65c1ff5. The old pin
+  brought hashes 7ab0c23 and char-classify eb1efcb, and FetchContent keeps the first
+  declaration of a name, so a consumer that reached http-parser before char-classify
+  (http-log, prism through http) built against that old char-classify. The parser uses
+  enum.h only for its enums; nothing it reports changes.
 - **The parse loop is compiled twice, strict and lenient.** The hardening as first written
   kept `lenient_http_headers` in a local across the loop: free on an M4 Pro (0.98-1.06x of
   476ba60), but 1.04-1.19x on an i9, the request line included, from 58 more stack

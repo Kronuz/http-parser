@@ -49,8 +49,8 @@ toolchain:
 cmake -B build -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
 ```
 
-The first configure fetches `enum-reflection` over the network (FetchContent,
-`GIT_TAG main`), and that pulls its own transitive deps (perfect-hash, hashes,
+The first configure fetches `enum-reflection` over the network (FetchContent, at
+the commit `CMakeLists.txt` pins), and that pulls its own transitive deps (constexpr-phf, hashes,
 static-string, char-classify). Expected output ends with
 `all http-parser tests passed`, exit 0. The test target is `http_parser_test`; the
 registered CTest name is `http_parser`. A second test, `http_parser_diff`
@@ -83,7 +83,9 @@ macro. That header lives in the sibling
 [enum-reflection](https://github.com/Kronuz/enum-reflection) library, pulled in by
 CMake and linked `PUBLIC` so the include path resolves (the public header chain
 `http_parser.h` -> `http_parser_enums.h` -> `"enum.h"` reaches consumers, hence
-`PUBLIC`). We track its tip with `GIT_TAG main`, like the rest of the family. This
+`PUBLIC`). It is pinned to a commit: a consumer that also fetches enum-reflection, or
+its dependencies (constexpr-phf, hashes, static-string, char-classify), gets whichever
+declaration CMake sees first, so move the pin when enum-reflection's moves. This
 is the library's only external dependency. The implementation's other include,
 `"likely.h"`, is satisfied by the vendored copy in this repo, not a dependency.
 
