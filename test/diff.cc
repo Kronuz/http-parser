@@ -856,6 +856,11 @@ int main(int argc, char** argv) {
 			harden(t_res, "HTTP/" + std::string(v) + " 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
 		}
 		harden(t_res, "HTTP/0.9 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
+		// A request line has a version: HTTP/0.9 requests have none, nor headers, so a header
+		// section after such a line is not HTTP/0.9's (and HTTP/0.x is an error at the 0).
+		harden(t_req, "GET /\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nhello", HPE_INVALID_VERSION, true, 5);
+		harden(t_req, "GET /x?y\r\n\r\n", HPE_INVALID_VERSION, true, 8);
+		harden(t_req, "GET / HTTP/0.9\r\nContent-Length: 0\r\n\r\n", HPE_INVALID_VERSION, true, 11);
 #if HTTP_PARSER_STRICT
 		// Transfer-Encoding before HTTP/1.1: the message is read, then the connection closes
 		// (RFC 9112 section 6.1), whatever Connection says. (A non-strict build reads on after

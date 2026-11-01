@@ -60,6 +60,7 @@ request/method.md:400	B-method	RTSP/1.0
 request/method.md:430	B-method	ANNOUNCE with RTSP/1.0
 request/method.md:458	B-method	PRI (HTTP/2 preface)
 request/method.md:482	B-method	QUERY
+request/sample.md:314	B-stricter	a request line without a version rejected: HTTP/0.9 has no headers (llhttp reads them)
 request/sample.md:394	B-error	both reject (fix/smuggling); the callbacks before the error differ: obs-fold lines ended by bare LF parsed as headers
 request/sample.md:454	B-lenient	lenient-optional-lf-after-cr: CR without LF rejected
 request/transfer-encoding.md:490	B-error	both reject (fix/smuggling); the callbacks before the error differ: unknown coding `pigeons` ignored: no body
@@ -122,6 +123,7 @@ split:request/invalid.md:425	B-split	header slice delivered before the error
 split:request/invalid.md:454	B-split	callbacks before the error depend on where the input is split
 split:request/lenient-header-value-relaxed.md:8	B-split	both reject the \f (fix/smuggling); a header slice is delivered first when split
 split:request/lenient-header-value-relaxed.md:38	B-split	both reject the \f (fix/smuggling); a header slice is delivered first when split
+split:request/sample.md:314	B-split	callbacks before the error depend on where the input is split
 split:request/sample.md:394	B-split	callbacks before the error depend on where the input is split
 split:request/transfer-encoding.md:1123	B-split	body slice delivered before the error
 split:request/transfer-encoding.md:1166	B-split	body slice delivered before the error

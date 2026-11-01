@@ -1253,6 +1253,12 @@ reexecute:
             }
             /* FALLTHROUGH */
           case CR:
+            /* Unless lenient: a request line has a version. HTTP/0.9 has no
+             * headers, and this would read them (RFC 9112 section 3) */
+            if (!lenient) {
+              SET_ERRNO(HPE_INVALID_VERSION);
+              goto error;
+            }
             parser->http_major = 0;
             parser->http_minor = 9;
             UPDATE_STATE((ch == CR) ?
