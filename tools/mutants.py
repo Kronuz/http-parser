@@ -120,6 +120,7 @@ MUTANTS = [
     ("harden-version-missing", "all", "             * headers, and this would read them (RFC 9112 section 3) */\n            if (!lenient) {", "             * headers, and this would read them (RFC 9112 section 3) */\n            if (false) {"),
     ("harden-http10-te-close", "all", "    if (!parser->lenient_http_headers && (parser->flags & F_CHUNKED) &&\n        parser->http_major < 2) {", "    if (false) {"),
     ("harden-http10-te-close-version", "all", "    if (!parser->lenient_http_headers && (parser->flags & F_CHUNKED) &&\n        parser->http_major < 2) {", "    if (!parser->lenient_http_headers && (parser->flags & F_CHUNKED) &&\n        parser->http_major < 1) {"),
+    ("harden-trailer-cl", "all", "if unlikely(!IS_NUM(ch) || (!lenient && (parser->flags & F_TRAILING))) {", "if unlikely(!IS_NUM(ch)) {"),
     ("harden-version-known-res", "all", "        parser->http_minor = ch - '0';\n        /* Unless lenient: the version is complete, and must be a known one */\n        if (!lenient && !VERSION_KNOWN(parser)) {\n          SET_ERRNO(HPE_INVALID_VERSION);\n          goto error;\n        }\n        UPDATE_STATE(s_res_http_minor);", "        parser->http_minor = ch - '0';\n        UPDATE_STATE(s_res_http_minor);"),
     ("harden-version-fast-path", "all", "                (lenient || KNOWN_VERSION(p[5] - '0', p[7] - '0'))) {", "                true) {"),
 ]

@@ -856,6 +856,14 @@ int main(int argc, char** argv) {
 			harden(t_res, "HTTP/" + std::string(v) + " 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
 		}
 		harden(t_res, "HTTP/0.9 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
+		// No Content-Length in a trailer section (an empty one is an empty Content-Length).
+		for (const char* cl : { "30", "0", "5" }) {
+			harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nContent-Length: " + std::string(cl) + "\r\n\r\n",
+				HPE_INVALID_CONTENT_LENGTH, true, 76);
+			harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX: y\r\ncontent-length: " + std::string(cl) + "\r\n\r\n",
+				HPE_INVALID_CONTENT_LENGTH, true, 72);
+		}
+		harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nContent-Lengthx: 5\r\nExpires: 0\r\n\r\n", HPE_OK);
 		// A request line has a version: HTTP/0.9 requests have none, nor headers, so a header
 		// section after such a line is not HTTP/0.9's (and HTTP/0.x is an error at the 0).
 		harden(t_req, "GET /\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nhello", HPE_INVALID_VERSION, true, 5);

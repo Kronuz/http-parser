@@ -1700,7 +1700,9 @@ header_field_begin:
             break;
 
           case h_content_length:
-            if unlikely(!IS_NUM(ch)) {
+            /* Unless lenient: no Content-Length in a trailer section, where it
+             * cannot frame the message (RFC 9110 section 6.5.1) */
+            if unlikely(!IS_NUM(ch) || (!lenient && (parser->flags & F_TRAILING))) {
               SET_ERRNO(HPE_INVALID_CONTENT_LENGTH);
               goto error;
             }
