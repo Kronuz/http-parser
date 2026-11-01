@@ -10,13 +10,22 @@ easy to fall into.
 ```
 http_parser.h         Declares the API (init, settings, execute, helpers) and the http_parser / http_parser_settings structs. Header. Verbatim from Xapiand.
 http_parser_enums.h   The method / status / errno / state / header-state enums, defined with enum.h's ENUM() macro. Includes "enum.h". Verbatim from Xapiand.
-http_parser.cc        The streaming state machine: http_parser_execute() plus helpers. Verbatim from Xapiand except for the .c -> .cc rename. Includes "likely.h".
+http_parser.cc        The streaming state machine: http_parser_execute() plus helpers. From Xapiand, with the bulk scans listed under "Standalone vs. Xapiand". Includes "likely.h".
 likely.h              Self-contained likely()/unlikely() branch hints. Vendored on extraction (no config.h coupling).
 test/test.cc          Runnable smoke test: GET, POST+body, byte-by-byte streaming, chunked across two buffers, malformed method, keep-alive.
+test/diff.cc          Differential test (CTest `http_parser_diff`): the parser against test/http_parser_old.cc over a corpus, mutations, sweeps and random messages; compares every callback and every parser field.
+test/fuzz.cc          Differential fuzz target on the same oracle: a libFuzzer target, or (HTTP_PARSER_FUZZ_DRIVER) the mutation loop `http_parser_fuzz`, whose short run is the CTest test `http_parser_fuzz`. Every input runs at every split point, with pauses and failures.
+test/http_parser_old.cc  Frozen copy of http_parser.cc from before the bulk scans, symbols renamed (http_parser_old_*). Never edit it; test/http_parser_old.h declares it.
+tools/mutants.py      Breaks each fast path in about 40 ways and requires test/diff.cc to fail on every one.
+bench/bench.cc        A/B benchmark: the parser against the frozen copy, with an A/A arm and llhttp (cmake -DHTTP_PARSER_BUILD_BENCH=ON).
+bench/loop.cc         One workload through one parser N times (http_parser_loop): instructions per message under callgrind, or a steady loop for a profiler.
+bench/micro_*.cc      Micro benchmarks of the CRLF scan and the URL run against the byte loops and memchr.
 examples/demo.cc      A runnable tour (not a test).
-CMakeLists.txt        STATIC library `http_parser` (+ alias http_parser::http_parser); FetchContent enum-reflection; CTest test `http_parser`.
+CMakeLists.txt        STATIC library `http_parser` (+ alias http_parser::http_parser); FetchContent enum-reflection; CTest tests `http_parser`, `http_parser_diff`, `http_parser_fuzz`.
+.github/workflows/    ci.yml: the shared matrix, plus a build without the vector code and one non-strict build; fuzz.yml: the nightly fuzz run (x86-64 and arm64, both modes).
 LICENSE               MIT. NGINX/Joyent for the parser; Dubalu LLC for the Xapiand additions and extraction wiring.
 README.md             What it is, install, quick start.
+CHANGELOG.md          Behavior and performance changes, dated.
 docs/API.md           The API reference and callback rules.
 docs/http-parser.d2   The README diagram's source (docs/http-parser.svg is rendered from it).
 ARCHITECTURE.md       Internal design of the streaming state machine, callbacks, body handling, enums.
@@ -43,7 +52,20 @@ The first configure fetches `enum-reflection` over the network (FetchContent,
 `GIT_TAG main`), and that pulls its own transitive deps (perfect-hash, hashes,
 static-string, char-classify). Expected output ends with
 `all http-parser tests passed`, exit 0. The test target is `http_parser_test`; the
-registered CTest name is `http_parser`. The test and demo are only added when this
+registered CTest name is `http_parser`. A second test, `http_parser_diff`
+(`test/diff.cc`, about 1.8 million parses in a few seconds), ends with
+`all http-parser differential checks passed`; run it after any change to
+`http_parser.cc`, also with `-DCMAKE_CXX_FLAGS=-DHTTP_PARSER_NO_SIMD` and
+`-DCMAKE_CXX_FLAGS=-DHTTP_PARSER_STRICT=0` (the byte loops and the non-strict URL
+table), and under ASan/UBSan where they run. `http_parser_fuzz` is a short mutation
+loop over the same oracle; for a long run build it with ASan and UBSan and give it
+`--iters`, or configure clang with
+`-DCMAKE_CXX_FLAGS="-fsanitize=fuzzer-no-link,address,undefined" -DHTTP_PARSER_BUILD_LIBFUZZER=ON`
+and run `http_parser_libfuzzer` (`--dump-corpus DIR` of `http_parser_fuzz` writes the
+seed corpus). `python3 tools/mutants.py BUILD_DIR` checks that the differential test
+catches each deliberate break of a fast path. `cmake -DHTTP_PARSER_BUILD_BENCH=ON`
+adds `http_parser_bench` (A/B against the frozen copy; run it under a quiet
+machine). The tests and demo are only added when this
 repo is the top-level project (CMakeLists.txt), so consumers vendoring it via
 `FetchContent` won't build them.
 
@@ -106,12 +128,38 @@ is the library's only external dependency. The implementation's other include,
   parser's method-matching trie in `http_parser.cc` then needs the new verb wired
   into its character dispatch; this is the fiddly part, mirror an existing verb of
   the same first letters.
-- **Always extend the smoke test.** `test/test.cc` is the only executable check.
-  Add a case for any new behavior and assert the exact parsed method / url /
+- **Always extend the smoke test.** `test/test.cc` is the only executable check
+  for the API. Add a case for any new behavior and assert the exact parsed method / url /
   headers / body, following the append-based collector already there.
+- **A change to the parse loop must pass `http_parser_diff`.** It compares the
+  parser with the frozen `test/http_parser_old.cc` on every callback and every field
+  of `struct http_parser`, so it also holds a fast path to the byte-at-a-time result.
+  Add the new path's boundary cases to `test/diff.cc` (a sweep over every byte value
+  at every position, and a buffer that ends inside the run), add its mutants to
+  `tools/mutants.py`, and check that every one of them is killed.
 
 ## Traps
 
+- **A bulk scan must not skip the byte that crosses `HTTP_MAX_HEADER_SIZE`.** Each
+  byte of a URL or header run counts against `nread`; the runs stop short of the
+  limit so the byte-at-a-time path reports the overflow at the same offset. A scan
+  that adds the whole run and checks afterwards moves the error.
+- **A vector scan reads only whole 16-byte blocks inside its span.** Reading the
+  block that straddles the end of the buffer is a harmless-looking out-of-bounds read
+  that AddressSanitizer flags. Keep the byte loop for the tail.
+- **`find_crlf` stays out of line.** Inlined into `http_parser_execute()` the vector
+  code changes its register allocation and slows every state, by up to 1.5x on a
+  request line. Re-measure with `bench/bench.cc` before touching the attributes.
+- **A direct transition counts its byte like the loop head.** `NEXTCHAR_COUNTED()`
+  is for a target state at or below `s_headers_done` (it adds to `nread` and checks
+  the limit), `NEXTCHAR()` for the body states (nothing is counted). The wrong one
+  moves the overflow error or lets a long line through.
+- **A `goto` enters the target state's own code.** Do not copy a state's body into
+  the path that precedes it: the next rule added to that state (a flag, a check)
+  would then apply on the loop path and not on this one.
+- **Set the state before the callback or the jump.** A callback that pauses or
+  fails returns with whatever state was set, and `execute()` resumes there.
+- **Do not edit `test/http_parser_old.cc`.** It is the oracle.
 - **Compiling the implementation as C silently changes the enums.** `enum.h` gates
   its C++ machinery behind `#ifdef __cplusplus`; built as C, `ENUM()` collapses to
   a plain enum and the reflective accessors and the enum-reflection dependency
@@ -131,9 +179,15 @@ from Xapiand's in-tree copy. The extraction deltas are small and mechanical: the
 one local include `"enum.h"` is resolved against the sibling enum-reflection
 library through CMake, the `"likely.h"` include is satisfied by a vendored
 self-contained copy (dropping Xapiand's `config.h` coupling), and the
-implementation file was renamed `http_parser.c` -> `http_parser.cc`. No parser
-logic changed; any edit here should stay reconcilable with upstream as a plain
-diff.
+implementation file was renamed `http_parser.c` -> `http_parser.cc`. The parser
+logic is Joyent 2.7.1 plus these local changes, all in `http_parser.cc`, all
+behavior-identical (see ARCHITECTURE.md, "Bulk scans and direct transitions"):
+`find_crlf` (one pass, 16 bytes at a time), `skip_url_chars` and its use in the URL
+states, the `HTTP/d.d` CRLF shortcut at `s_req_http_start`, the CR LF shortcut at
+the end of `s_header_value`, and the direct transitions through the header line, the chunk
+frame and the end of the headers. Each is a separate hunk (and a separate commit) so the planned
+refresh below can re-apply or drop them one at a time; any other edit here should
+stay reconcilable with upstream as a plain diff.
 
 Consumed by [Kronuz/http](https://github.com/Kronuz/http) (the HTTP application
 layer): it parses with this fork rather than a stricter parser like llhttp because

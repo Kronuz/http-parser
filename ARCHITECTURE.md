@@ -79,6 +79,50 @@ enums, so the names and the values cannot drift apart. `http_errno_name()` retur
 the `HPE_`-prefixed token name (e.g. `"HPE_INVALID_METHOD"`), since the table is
 generated as `"HPE_" #n`.
 
+## Bulk scans and direct transitions
+
+The main loop pays for every byte it dispatches: the loop head (load, header-size
+count) and the indirect jump through the state table cost about a nanosecond a byte,
+and a URL byte through `parse_url_char()` about three. Most of a message is bytes
+that need no dispatch, so the paths below take a run of bytes, or the next state,
+in one step. Each does exactly what the byte-at-a-time states do for the same
+bytes: the same parser fields, the same state, the same callbacks and the same
+`nread` (the header-size count). `test/diff.cc` holds them to that.
+
+Runs of bytes:
+
+- **URL run** (`skip_url_chars`). In `s_req_path`, `s_req_query_string` and
+  `s_req_fragment` every further URL character leaves the state unchanged, so the
+  loop takes the run at once: 16 bytes at a time with NEON or SSE2 in strict mode
+  (0x21..0x7e except `#` and `?`), the `IS_URL_CHAR` table otherwise.
+- **End of the request line.** At the `H` after the URL, a complete `HTTP/d.d`
+  followed by CRLF sets `http_major`, `http_minor` and the state directly.
+- **End of a header value.** `find_crlf` finds the first CR or LF in one pass, 16
+  bytes at a time. It is not inlined (inlined, the vector code costs the state
+  machine's registers and slows every other state). After a CR that is followed by
+  LF and one more byte, the loop takes the LF and that byte together.
+
+Direct transitions. Where one state always follows another, the code steps to the
+next byte, counts it as the loop head would, and jumps to the next state's label
+(`NEXTCHAR_COUNTED()` and `goto`; `NEXTCHAR()` for the body states, whose bytes
+`nread` does not count) instead of returning to the loop and its dispatch. The
+state is set before every callback and every jump, so a callback that fails or
+pauses leaves the same state and return value. A header line runs from its first
+byte to the next line's first byte this way (name, `:`, blanks, first value byte,
+value, CR LF, `s_header_value_lws`, `s_header_field_start`), the end of the headers
+runs into the first body byte, and a chunk frame (size digits, CR LF, data, CR LF)
+runs into the next one. The rare paths (folded values, chunk extensions, a buffer
+that ends mid-sequence) leave through `break` into the loop.
+
+Four rules hold every one of them. A run never reaches past the point where `nread`
+would exceed `HTTP_MAX_HEADER_SIZE`: it stops short, and the byte-at-a-time path
+reports the overflow at the same byte. A vector loop reads only whole 16-byte blocks
+inside the span it was given (a byte loop takes the tail), so no read leaves the
+caller's buffer. A fast path that does not apply falls back to the states, so
+malformed input is reported where it always is. And a jump always goes through the
+target state's own code, never a copy of it, so a rule added to a state applies on
+every path into it. `HTTP_PARSER_NO_SIMD` turns the vector code off.
+
 ## Errors and pausing
 
 On malformed input the machine sets `parser->http_errno` to the matching `HPE_*`

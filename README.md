@@ -30,7 +30,8 @@ reflective enums and Xapiand's extra verbs.
 
 Requires a C++20 compiler and CMake 3.14 or newer; it fetches enum-reflection.
 It compiles one source file, `http_parser.cc`. CI builds it on Linux (x86_64,
-arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan, and TSan builds.
+arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan, and TSan builds, a
+build without the vector code, a non-strict build, and a nightly fuzz run.
 
 ```cmake
 include(FetchContent)
@@ -79,6 +80,36 @@ and shows the error for a malformed request.
 - ❌ HTTP/2 or HTTP/3: it parses HTTP/1.x only.
 - ❌ A new project with no ties to this API: upstream Node.js has replaced
   `http_parser` with [llhttp](https://github.com/nodejs/llhttp).
+
+## ⚡ Performance
+
+The parse loop dispatches on one state per byte, so the parser takes everything it
+can in larger steps: a run of URL characters, the end of a request line, the end
+of a header value (16 bytes at a time with NEON or SSE2), and the next state of a
+header line or a chunk frame without going back through the dispatch. The results,
+callbacks and offsets are those of the byte-at-a-time parser; `test/diff.cc`,
+`test/fuzz.cc` and `tools/mutants.py` hold it to that.
+
+`bench/bench.cc` times each workload against the frozen byte-at-a-time parser and
+llhttp 9.4.3 (ns per message, `-O3`, interleaved trials, quiet machine):
+
+| Workload | M4 Pro | llhttp | i9-9980HK | llhttp |
+|---|---:|---:|---:|---:|
+| GET, 3 headers | 78 | 75 | 175 | 185 |
+| GET, 14 headers (browser) | 275 | 258 | 620 | 617 |
+| GET, 64 custom headers | 1033 | 1046 | 2525 | 2346 |
+| POST, 1 KB body | 98 | 89 | 241 | 237 |
+| Chunked body, 16 x 256 B | 217 | 183 | 428 | 454 |
+| Request line only | 38 | 35 | 75 | 83 |
+| 125-byte URL | 65 | 75 | 130 | 147 |
+
+Apple M4 Pro, Apple clang 17; Intel i9-9980HK, Apple clang 17, no `-march`.
+Reproduce with:
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DHTTP_PARSER_BUILD_BENCH=ON && cmake --build build
+build/http_parser_bench 15 30
+```
 
 ## 📚 Documentation
 
