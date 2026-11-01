@@ -97,10 +97,12 @@ Runs of bytes:
   (0x21..0x7e except `#` and `?`), the `IS_URL_CHAR` table otherwise.
 - **End of the request line.** At the `H` after the URL, a complete `HTTP/d.d`
   followed by CRLF sets `http_major`, `http_minor` and the state directly.
-- **End of a header value.** `find_crlf` finds the first CR or LF in one pass, 16
-  bytes at a time. It is not inlined (inlined, the vector code costs the state
-  machine's registers and slows every other state). After a CR that is followed by
-  LF and one more byte, the loop takes the LF and that byte together.
+- **End of a header value.** `find_value_end` finds the first CR, LF or other byte a
+  value may not hold (a control byte other than HT, or DEL) in one pass, 16 bytes at a
+  time, and the loop rejects the latter; with `lenient_http_headers` set, `find_crlf`
+  finds the first CR or LF only, as 2.7.1 did. Neither is inlined (inlined, the vector
+  code costs the state machine's registers and slows every other state). After a CR
+  that is followed by LF and one more byte, the loop takes the LF and that byte together.
 
 Direct transitions. Where one state always follows another, the code steps to the
 next byte, counts it as the loop head would, and jumps to the next state's label
@@ -122,6 +124,20 @@ caller's buffer. A fast path that does not apply falls back to the states, so
 malformed input is reported where it always is. And a jump always goes through the
 target state's own code, never a copy of it, so a rule added to a state applies on
 every path into it. `HTTP_PARSER_NO_SIMD` turns the vector code off.
+
+## Strictness
+
+What the parser accepts follows llhttp's default, the reference its conformance test
+(`test/conformance.cc`, llhttp's own suite) holds it to, on the points that decide
+where a message ends: every line ends in CRLF, a header value holds no control byte
+but HT and no obs-fold, a request's `Transfer-Encoding` is `chunked` alone and once,
+`Content-Length` is digits (spaces after them only), a chunk size is followed by CRLF
+or well-formed extensions, and the version is HTTP/0.9, 1.0, 1.1 or 2.0. Each rule is
+one check in the state that sees the byte, under `!lenient`; two header states
+(`h_transfer_encoding_other`, `h_content_length_ws`) carry a header's kind to the end of
+its line, and `parser->index` the place in a chunk extension. With
+`lenient_http_headers` set the checks are off and the parser is 2.7.1's again, which
+`test/diff.cc` checks against the frozen copy.
 
 ## Errors and pausing
 

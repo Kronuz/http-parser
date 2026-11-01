@@ -2,30 +2,63 @@
 
 Notable changes to http-parser, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); entries are dated because the
-library has no releases. Nothing the parser reports changes in these entries: the
-differential test (`test/diff.cc`) holds every callback, its bytes and offset, every
-return of `http_parser_execute()` and every field of `struct http_parser` to the
-frozen parser in `test/http_parser_old.cc`, on 1.9 million parses per run.
+library has no releases. Except where an entry says so (the hardening of 2026-11-01),
+nothing the parser reports changes: the differential test (`test/diff.cc`) holds every
+callback, its bytes and offset, every return of `http_parser_execute()` and every field of
+`struct http_parser` to the frozen parser in `test/http_parser_old.cc`.
 
 ## 2026-11-01
 
+### Changed (security)
+
+- **Hardening against request smuggling, on unless `lenient_http_headers` is set.** llhttp's
+  conformance suite (now `test/llhttp_corpus.inc`, the CTest test `http_parser_conformance`)
+  found 32 requests that this parser framed differently from llhttp, most of them the
+  disagreement between a front end and a back end that request smuggling uses. The parser
+  now rejects them, as upstream http_parser 2.8 to 2.9.4 and llhttp do:
+  - a bare LF ending the request line, a header line or the headers (`HPE_CR_EXPECTED`, new);
+  - obs-fold, a header line that starts with a space or a tab (`HPE_INVALID_HEADER_TOKEN`);
+  - a control byte other than HT, or DEL, anywhere in a header value: before, only the
+    first byte of a value or of an `execute()` call was checked, so the verdict depended on
+    where the input was split (`HPE_INVALID_HEADER_TOKEN`; upstream 2a0d106);
+  - in a request, a `Transfer-Encoding` that is not exactly `chunked`, an empty one, or
+    `chunked` given twice (`HPE_INVALID_TRANSFER_ENCODING`, new; stricter than upstream
+    7d5c99d and llhttp, which also take `deflate, chunked`: this parser decodes no other
+    coding);
+  - `Content-Length` with a space between digits, or empty (`HPE_INVALID_CONTENT_LENGTH`;
+    upstream 01da95f, CVE-2018-7159, and 3502589);
+  - a space after a chunk size, and a chunk extension that is not `;name[=token|"quoted"]`,
+    which includes a bare LF inside one (`HPE_INVALID_CHUNK_SIZE`);
+  - an HTTP version with more than one digit on a side, or other than 0.9, 1.0, 1.1 or 2.0
+    (`HPE_INVALID_VERSION`; upstream 9f489a4).
+
+  Setting `parser->lenient_http_headers = 1` after `http_parser_init()` restores the
+  2.7.1 behavior for every one of these: `test/diff.cc` holds the lenient parser to the
+  frozen one exactly, and the strict one to it up to these errors.
+- **`http_parser_parse_url()` reads only the port's own digits.** It called `strtoul`, which
+  reads on past `buflen` when the buffer is not NUL-terminated (upstream 9ce7316).
+
 ### Added
 
+- `HPE_INVALID_TRANSFER_ENCODING` and `HPE_CR_EXPECTED`, after `HPE_UNKNOWN`: the numbers of
+  the existing errors are unchanged.
 - `test/conformance.cc` (CTest `http_parser_conformance`): llhttp's markdown suite (v9.4.3,
   253 cases, MIT) against this parser. `tools/llhttp_corpus.mjs` turns llhttp's
   `test/request/*.md` and `test/response/*.md` into `test/llhttp_corpus.inc`, the input
-  bytes and llhttp's expected log reduced to what http_parser's callbacks report; the
-  cases where this parser differs are listed with a category in
-  `test/llhttp_divergences.txt`, and the test fails when that list and the parser
-  disagree. Built with `-DHTTP_PARSER_LLHTTP_SOURCE_DIR`, it also runs llhttp, which
-  reproduces all 253 of its own logs. This parser differs on 90 cases: 32 are requests
-  it frames differently from llhttp (a bare LF ending a line, obs-fold, Transfer-Encoding
-  other than `chunked`, `Content-Length: 4 2`, chunk extensions, control bytes in a value,
-  versions), 13 the same kinds in responses, 13 other response cases, and 32 benign
-  (methods outside this parser's table, llhttp's lenient flags, other callbacks before an
-  error). In 19 cases one byte at a time gives other callbacks than one buffer; in two of
-  them, a control byte in a header value is accepted or rejected depending on where the
-  input is split.
+  bytes and llhttp's expected log reduced to what http_parser's callbacks report; the cases
+  where this parser differs are listed with a category in `test/llhttp_divergences.txt`, and
+  the test fails when that list and the parser disagree. Built with
+  `-DHTTP_PARSER_LLHTTP_SOURCE_DIR`, it also runs llhttp, which reproduces all 253 of its
+  own logs. Before the hardening above this parser differed on 90 cases: 32 were requests it
+  framed differently from llhttp (a bare LF ending a line, obs-fold, Transfer-Encoding other
+  than `chunked`, `Content-Length: 4 2`, chunk extensions, control bytes in a value,
+  versions), 13 the same kinds in responses, 13 other response cases, and 32 benign (methods
+  outside this parser's table, llhttp's lenient flags, other callbacks before an error). In
+  19 cases one byte at a time gave other callbacks than one buffer; in two of them, a
+  control byte in a header value was accepted or rejected depending on where the input was
+  split. After it, none of the request cases that still differ is request smuggling: they
+  are methods outside the table, llhttp's lenient flags, rejections with other callbacks
+  before the error, and the stricter Transfer-Encoding rule above.
 
 ## 2026-10-31
 

@@ -121,7 +121,7 @@ int cb_cdone(http_parser* p) { return note(p, CHUNK_DONE, nullptr, 0); }
 // Feeds `in` in chunks of `plan` sizes (cycled; empty plan = one call), each chunk in its own
 // exactly-sized heap block so a read past the end is visible to AddressSanitizer.
 void drive(const Impl& im, enum http_parser_type t, const std::string& in, const std::vector<size_t>& plan,
-	const Mode& m, std::vector<Event>& out) {
+	const Mode& m, std::vector<Event>& out, bool lenient) {
 	http_parser_settings s;
 	memset(&s, 0, sizeof s);
 	auto on = [&](Kind k) { return (m.mask >> k) & 1u; };
@@ -142,6 +142,7 @@ void drive(const Impl& im, enum http_parser_type t, const std::string& in, const
 	memset(&p, 0, sizeof p);
 	im.init(&p, t);
 	p.data = &ctx;
+	p.lenient_http_headers = lenient;
 
 	auto record_ret = [&](size_t n) {
 		Event e; e.kind = RET; e.off = (long) n; e.snap = snap(&p);
@@ -198,21 +199,53 @@ std::string show(const Event& e) {
 
 long checks = 0, failures = 0;
 
+// With lenient_http_headers unset the parser rejects what the frozen 2.7.1 parser
+// let through (CHANGELOG.md, "Hardening"), and it may stop with one of these where
+// the old parser went on.
+bool hardening_errno(unsigned e) {
+	return e == HPE_CR_EXPECTED || e == HPE_INVALID_HEADER_TOKEN || e == HPE_INVALID_TRANSFER_ENCODING ||
+		e == HPE_INVALID_CONTENT_LENGTH || e == HPE_INVALID_CHUNK_SIZE || e == HPE_INVALID_VERSION;
+}
+
+// What a consumer sees of the parser: the read-only fields and the flags.
+bool public_equal(const Snap& a, const Snap& b) {
+	return a.flags == b.flags && a.content_length == b.content_length && a.http_major == b.http_major &&
+		a.http_minor == b.http_minor && a.status_code == b.status_code && a.method == b.method &&
+		a.http_errno == b.http_errno && a.upgrade == b.upgrade;
+}
+
 // Runs both parsers; on a difference prints the first one and counts a failure. With
 // HTTP_PARSER_DIFF_STOP set in the environment the first difference ends the run
 // (tools/mutants.py does: a broken parser then fails in seconds).
+//
+// Each input runs twice. Lenient (lenient_http_headers set on both parsers): every event and
+// every field equal. Strict (the default): the events and the public fields equal, except
+// that the parser may stop early with a hardening error (hardening_errno).
+bool check_mode(const std::string& what, enum http_parser_type t, const std::string& in, const std::vector<size_t>& plan, const Mode& m,
+	bool lenient);
+
 bool check(const std::string& what, enum http_parser_type t, const std::string& in, const std::vector<size_t>& plan, const Mode& m) {
+	return check_mode(what, t, in, plan, m, true) && check_mode(what, t, in, plan, m, false);
+}
+
+bool check_mode(const std::string& what, enum http_parser_type t, const std::string& in, const std::vector<size_t>& plan, const Mode& m,
+	bool lenient) {
 	static const bool stop = getenv("HTTP_PARSER_DIFF_STOP") != nullptr;
 	std::vector<Event> a, b;
-	drive(old, t, in, plan, m, a);
-	drive(live, t, in, plan, m, b);
+	drive(old, t, in, plan, m, a, lenient);
+	drive(live, t, in, plan, m, b, lenient);
 	++checks;
 	size_t n = std::min(a.size(), b.size()), i = 0;
-	while (i < n && a[i].kind == b[i].kind && a[i].data == b[i].data && a[i].off == b[i].off && a[i].snap == b[i].snap) ++i;
+	auto same = [&](const Event& x, const Event& y) {
+		return x.kind == y.kind && x.data == y.data && x.off == y.off && (lenient ? x.snap == y.snap : public_equal(x.snap, y.snap));
+	};
+	while (i < n && same(a[i], b[i])) ++i;
 	if (i == n && a.size() == b.size()) return true;
+	if (!lenient && i + 1 == b.size() && b[i].kind == RET && hardening_errno(b[i].snap.http_errno)) return true;
 	++failures;
 	if (failures <= 10) {
-		printf("MISMATCH %s type=%d plan=%s hc_ret=%d fail_at=%d pause_at=%d mask=%x eof=%d\n  input: %s\n", what.c_str(), (int) t,
+		printf("MISMATCH %s%s type=%d plan=%s hc_ret=%d fail_at=%d pause_at=%d mask=%x eof=%d\n  input: %s\n", what.c_str(),
+			lenient ? " [lenient]" : " [strict]", (int) t,
 			plan.empty() ? "oneshot" : std::to_string(plan[0]).c_str(), m.hc_ret, m.fail_at, m.pause_at, m.mask, (int) m.eof, show(in).c_str());
 		printf("  event %zu of old=%zu new=%zu\n", i, a.size(), b.size());
 		if (i < a.size()) printf("  old: %s\n", show(a[i]).c_str());
@@ -471,6 +504,40 @@ const enum http_parser_type types[] = { HTTP_REQUEST, HTTP_RESPONSE, HTTP_BOTH }
 
 }  // namespace
 
+// The parser alone, not lenient: `in` must stop with `want` (HPE_OK: parse whole, with a
+// message completed), in one call, byte by byte, and (all_cuts) cut in two everywhere; and,
+// given `at`, the one call must stop at that offset (the byte that breaks the rule).
+const enum http_parser_type t_req = HTTP_REQUEST, t_res = HTTP_RESPONSE;
+
+void harden(enum http_parser_type t, const std::string& in, enum http_errno want, bool all_cuts = true, long at = -1) {
+	std::vector<std::vector<size_t>> plans = { {}, { 1 } };
+	for (size_t cut = 1; all_cuts && cut < in.size(); ++cut) plans.push_back({ cut, in.size() });
+	if (!all_cuts) plans.push_back({ 16 });
+	for (const auto& plan : plans) {
+		std::vector<Event> ev;
+		Mode m;
+		m.eof = want == HPE_OK && t == HTTP_RESPONSE;
+		drive(live, t, in, plan, m, ev, false);
+		++checks;
+		unsigned got = ev.empty() ? 0 : ev.back().snap.http_errno;
+		bool completed = std::any_of(ev.begin(), ev.end(), [](const Event& e) { return e.kind == MSG_DONE; });
+		long stop = !ev.empty() && ev.back().kind == RET ? ev.back().off : -1;
+		bool where = at < 0 || !plan.empty() || stop == at;
+		if (got == (unsigned) want && (want != HPE_OK || completed) && where) continue;
+		++failures;
+		if (failures <= 10) {
+			printf("HARDENING %s type=%d plan=%s: want %s at %ld, got %s at %ld%s\n", show(in).c_str(), (int) t,
+				plan.empty() ? "oneshot" : std::to_string(plan[0]).c_str(), http_errno_name(want), at,
+				http_errno_name((enum http_errno) got), stop, completed ? "" : " (no message completed)");
+		}
+		if (getenv("HTTP_PARSER_DIFF_STOP")) {
+			fflush(stdout);
+			exit(1);
+		}
+		return;
+	}
+}
+
 int main(int argc, char** argv) {
 	long rounds = argc > 1 ? atol(argv[1]) : 20000;
 	auto seeds = corpus();
@@ -682,7 +749,80 @@ int main(int argc, char** argv) {
 	}
 	printf("name sweep: %ld checks, %ld failures\n", checks, failures);
 
-	// 6. Random messages, random mutations, random splits.
+	// 6. Hardening: what the parser rejects unless lenient_http_headers is set, each case in
+	// one call, byte by byte and cut in two at every position (the old parser accepts all of
+	// these, so the comparison above cannot tell a missing rejection).
+	{
+		const char* req = "GET / HTTP/1.1\r\n";
+		auto hdr = [&](const std::string& h) { return std::string(req) + h + "\r\n\r\n"; };
+		auto chunked = [&](const std::string& size_line) {
+			return std::string("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n") + size_line + "\r\nhello\r\n0\r\n\r\n";
+		};
+		// Control bytes anywhere in a value, around the 16-byte blocks of the scan.
+		const char ctl[] = { 0, 1, 8, 11, 12, 14, 31, 127 };
+		for (size_t n = 1; n <= 40; ++n)
+			for (size_t at = 0; at < n; ++at)
+				for (char c : ctl) {
+					std::string v(n, 'v');
+					v[at] = c;
+					harden(t_req, hdr("X: " + v), HPE_INVALID_HEADER_TOKEN, at < 3 || at + 3 > n);
+				}
+		for (size_t n = 1; n <= 40; ++n) harden(t_req, hdr("X: " + std::string(n, 'v') + "\tz\x80\xff"), HPE_OK, false);
+		// A bare LF ends no line.
+		harden(t_req, "GET / HTTP/1.1\nHost: x\r\n\r\n", HPE_CR_EXPECTED);
+		harden(t_req, "GET /\n", HPE_CR_EXPECTED);
+		harden(t_req, hdr("X: a\nContent-Length: 5"), HPE_CR_EXPECTED);
+		harden(t_req, hdr("X:\nContent-Length: 5"), HPE_CR_EXPECTED);
+		harden(t_req, std::string(req) + "X: a\r\n\n", HPE_CR_EXPECTED);
+		harden(t_req, std::string(req) + "X: a\n\r\n", HPE_CR_EXPECTED);
+		harden(t_res, "HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n", HPE_CR_EXPECTED);
+		harden(t_res, "HTTP/1.1 200\nContent-Length: 0\r\n\r\n", HPE_CR_EXPECTED);
+		harden(t_res, "HTTP/1.1 200 \nContent-Length: 0\r\n\r\n", HPE_CR_EXPECTED);
+		// obs-fold.
+		harden(t_req, hdr("X: a\r\n b"), HPE_INVALID_HEADER_TOKEN);
+		harden(t_req, hdr("X: a\r\n\tb"), HPE_INVALID_HEADER_TOKEN);
+		harden(t_req, hdr("X:\r\n b"), HPE_INVALID_HEADER_TOKEN);
+		harden(t_req, hdr("Foo: bar\r\n Content-Length: 38"), HPE_INVALID_HEADER_TOKEN);
+		// Transfer-Encoding in a request: "chunked", once.
+		for (const char* te : { "gzip", "identity", "gzip, chunked", "chunked, gzip", "chunk", "chunkedx", "chunked\t", "chunked ,", "chunkedchunked", "" })
+			harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: " + std::string(te) + "\r\n\r\n0\r\n\r\n", HPE_INVALID_TRANSFER_ENCODING);
+		harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", HPE_INVALID_TRANSFER_ENCODING);
+		harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n", HPE_INVALID_TRANSFER_ENCODING);
+		harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: identity\r\nContent-Length: 5\r\n\r\nhello", HPE_INVALID_TRANSFER_ENCODING);
+		harden(t_req, "POST / HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: gzip\r\n\r\nhello", HPE_INVALID_TRANSFER_ENCODING);
+		for (const char* te : { "chunked", "Chunked", "CHUNKED  " })
+			harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: " + std::string(te) + "\r\n\r\n0\r\n\r\n", HPE_OK);
+		harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nbody", HPE_OK);  // read until EOF, as before
+		// Content-Length: digits, then only spaces.
+		harden(t_req, "POST / HTTP/1.1\r\nContent-Length: 4 2\r\n\r\n" + std::string(42, 'x'), HPE_INVALID_CONTENT_LENGTH);
+		harden(t_req, "POST / HTTP/1.1\r\nContent-Length: 13 37\r\n\r\n", HPE_INVALID_CONTENT_LENGTH);
+		harden(t_req, "POST / HTTP/1.1\r\nContent-Length:\r\n\r\n", HPE_INVALID_CONTENT_LENGTH);
+		harden(t_req, "POST / HTTP/1.1\r\nContent-Length: \r\n\r\n", HPE_INVALID_CONTENT_LENGTH);
+		harden(t_req, "POST / HTTP/1.1\r\nContent-Length: 5  \r\n\r\nhello", HPE_OK);
+		// The chunk size line: ';' and well-formed extensions only.
+		for (const char* line : { "5 ", "5 ;a", "5 a", "5 a=b", "5;", "5;;a", "5;=b", "5;a=", "5;a=\"x", "5;a=\"x\\", "5;a b", "5;a\nb", "5;a=b\nc",
+				"5;a\x01", "5;a=\"x\x7f\"", "5;a=\"x\"y", "5;a=b=c", "5\t" })
+			harden(t_req, chunked(line), HPE_INVALID_CHUNK_SIZE);
+		for (const char* line : { "5", "5;a", "5;a=b", "5;a;b=c", "5;a=\"x y\\\"z\\\\\"", "5;a=\"\t\x80\"", "5;a=\"\";b" })
+			harden(t_req, chunked(line), HPE_OK);
+		// Versions: one digit each, and 0.9, 1.0, 1.1 or 2.0.
+		for (const char* v : { "1.2", "3.0", "9.9", "11.1", "1.10", "1.01", "2.1" }) {
+			harden(t_req, "GET / HTTP/" + std::string(v) + "\r\n\r\n", HPE_INVALID_VERSION);
+			harden(t_res, "HTTP/" + std::string(v) + " 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_INVALID_VERSION);
+		}
+		harden(t_res, "HTTP/01.1 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_INVALID_VERSION);
+		// At the second digit of the major version, not at the minor one after it.
+		harden(t_req, "GET / HTTP/11.1\r\n\r\n", HPE_INVALID_VERSION, true, 12);
+		harden(t_res, "HTTP/11.1 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_INVALID_VERSION, true, 6);
+		for (const char* v : { "1.0", "1.1", "2.0" }) {
+			harden(t_req, "GET / HTTP/" + std::string(v) + "\r\n\r\n", HPE_OK);
+			harden(t_res, "HTTP/" + std::string(v) + " 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
+		}
+		harden(t_res, "HTTP/0.9 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
+	}
+	printf("hardening: %ld checks, %ld failures\n", checks, failures);
+
+	// 7. Random messages, random mutations, random splits.
 	for (long i = 0; i < rounds; ++i) {
 		bool request = rnd(4) != 0;
 		std::string msg = random_message(request);

@@ -209,7 +209,10 @@ ENUM(flags,
   XX(INVALID_INTERNAL_STATE, "encountered unexpected internal state")\
   XX(STRICT, "strict mode assertion failed")                         \
   XX(PAUSED, "parser is paused")                                     \
-  XX(UNKNOWN, "an unknown error occurred")
+  XX(UNKNOWN, "an unknown error occurred")                           \
+  XX(INVALID_TRANSFER_ENCODING,                                      \
+     "request has invalid transfer-encoding")                        \
+  XX(CR_EXPECTED, "CR character expected")
 
 
 /* Define HPE_* values for each errno value above */
@@ -330,6 +333,11 @@ ENUM(header_states,
   , h_connection_keep_alive
   , h_connection_close
   , h_connection_upgrade
+
+  /* Unless lenient_http_headers: a Transfer-Encoding value that is not "chunked",
+   * and the spaces after a Content-Length's digits. */
+  , h_transfer_encoding_other
+  , h_content_length_ws
 )
 
 ENUM(http_host_state,

@@ -359,6 +359,59 @@ static void test_header_scan_at_buffer_end() {
 }
 
 
+// ---------------------------------------------------------------------------
+// Request smuggling: a bare LF does not end a header line, so the Content-Length
+// hidden after one is not taken and the request after it is not parsed out of the
+// body. Setting lenient_http_headers keeps the old reading (test/diff.cc has the
+// rest of the hardening cases).
+// ---------------------------------------------------------------------------
+
+static void test_hardening() {
+	const char* raw =
+		"GET / HTTP/1.1\r\nHost: localhost\r\nDummy: x\nContent-Length: 23\r\n\r\n"
+		"GET / HTTP/1.1\r\nDummy: GET /admin HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	{
+		http_parser parser;
+		http_parser_init(&parser, HTTP_REQUEST);
+		Collected c;
+		parser.data = &c;
+		http_parser_settings settings = make_settings();
+		size_t parsed = http_parser_execute(&parser, &settings, raw, std::strlen(raw));
+		assert(HTTP_PARSER_ERRNO(&parser) == HPE_CR_EXPECTED);
+		assert(parsed < std::strlen(raw));
+		assert(!c.headers_complete);
+	}
+	{
+		http_parser parser;
+		http_parser_init(&parser, HTTP_REQUEST);
+		parser.lenient_http_headers = 1;
+		Collected c;
+		parser.data = &c;
+		http_parser_settings settings = make_settings();
+		http_parser_execute(&parser, &settings, raw, std::strlen(raw));
+		assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK);
+		assert(c.message_complete);
+		assert(c.body == "GET / HTTP/1.1\r\nDummy: ");  // the old reading: the bare LF ends the header
+	}
+	{
+		// Transfer-Encoding other than chunked, Content-Length with a space inside.
+		for (const char* bad : { "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n",
+				"POST / HTTP/1.1\r\nContent-Length: 1 0\r\n\r\n0123456789" }) {
+			http_parser parser;
+			http_parser_init(&parser, HTTP_REQUEST);
+			Collected c;
+			parser.data = &c;
+			http_parser_settings settings = make_settings();
+			http_parser_execute(&parser, &settings, bad, std::strlen(bad));
+			assert(HTTP_PARSER_ERRNO(&parser) == HPE_INVALID_TRANSFER_ENCODING ||
+				HTTP_PARSER_ERRNO(&parser) == HPE_INVALID_CONTENT_LENGTH);
+			assert(!c.message_complete);
+		}
+	}
+	std::printf("http_parser hardening OK: bare LF, Transfer-Encoding and Content-Length rejected; lenient keeps 2.7.1\n");
+}
+
+
 int main() {
 	test_simple_get();
 	test_post_with_body();
@@ -367,6 +420,7 @@ int main() {
 	test_malformed_request();
 	test_keep_alive();
 	test_header_scan_at_buffer_end();
+	test_hardening();
 	std::printf("all http-parser tests passed\n");
 	return 0;
 }

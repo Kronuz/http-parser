@@ -31,6 +31,18 @@ The callbacks return non-zero to abort the parse. `on_headers_complete` is the
 one exception: returning `1` tells the parser not to expect a body (used for HEAD
 responses), `2` that there is no body and no further messages (used for CONNECT).
 
+## Strictness and `lenient_http_headers`
+
+The parser rejects what request smuggling relies on: a line ended by a bare LF
+(`HPE_CR_EXPECTED`), obs-fold and control bytes in a header value
+(`HPE_INVALID_HEADER_TOKEN`), a request `Transfer-Encoding` other than `chunked`
+alone (`HPE_INVALID_TRANSFER_ENCODING`), a `Content-Length` with spaces inside or empty
+(`HPE_INVALID_CONTENT_LENGTH`), a malformed chunk size line (`HPE_INVALID_CHUNK_SIZE`)
+and an HTTP version other than 0.9, 1.0, 1.1 or 2.0 (`HPE_INVALID_VERSION`). Set
+`p->lenient_http_headers = 1` after `http_parser_init()` to accept them as http_parser
+2.7.1 did (it also skips the header-value byte check, as before). Reject a request the
+parser rejects; do not forward it.
+
 ## Callback rules
 
 - The data callbacks (`on_url`, `on_header_field`, `on_header_value`, `on_body`)

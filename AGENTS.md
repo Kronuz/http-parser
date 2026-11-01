@@ -141,6 +141,14 @@ is the library's only external dependency. The implementation's other include,
 - **A change to the parse loop must pass `http_parser_diff`.** It compares the
   parser with the frozen `test/http_parser_old.cc` on every callback and every field
   of `struct http_parser`, so it also holds a fast path to the byte-at-a-time result.
+  It runs every input twice: with `lenient_http_headers` set (equal in every event and
+  field) and without it (equal in the events and the public fields, except that the
+  parser may stop early with a hardening error).
+- **A change to what the parser accepts must pass `http_parser_conformance`.** A case of
+  llhttp's suite that starts or stops differing fails it until
+  `test/llhttp_divergences.txt` says so, with a category. Each hardening check is one
+  `if (!lenient ...)` in the state that sees the byte; add it to the hardening sweep in
+  `test/diff.cc` and a mutant that removes it to `tools/mutants.py`.
   Add the new path's boundary cases to `test/diff.cc` (a sweep over every byte value
   at every position, and a buffer that ends inside the run), add its mutants to
   `tools/mutants.py`, and check that every one of them is killed.
@@ -154,6 +162,9 @@ is the library's only external dependency. The implementation's other include,
 - **A vector scan reads only whole 16-byte blocks inside its span.** Reading the
   block that straddles the end of the buffer is a harmless-looking out-of-bounds read
   that AddressSanitizer flags. Keep the byte loop for the tail.
+- **Every hardening check is off when `lenient_http_headers` is set.** That flag is the
+  documented way back to 2.7.1, and `test/diff.cc` relies on it to compare with the
+  frozen parser exactly.
 - **`find_crlf` stays out of line.** Inlined into `http_parser_execute()` the vector
   code changes its register allocation and slows every state, by up to 1.5x on a
   request line. Re-measure with `bench/bench.cc` before touching the attributes.
@@ -189,19 +200,22 @@ self-contained copy (dropping Xapiand's `config.h` coupling), and the
 implementation file was renamed `http_parser.c` -> `http_parser.cc`. The parser
 logic is Joyent 2.7.1 plus these local changes, all in `http_parser.cc`, all
 behavior-identical (see ARCHITECTURE.md, "Bulk scans and direct transitions"):
-`find_crlf` (one pass, 16 bytes at a time), `skip_url_chars` and its use in the URL
+`find_crlf` and `find_value_end` (one pass, 16 bytes at a time), `skip_url_chars` and its use in the URL
 states, the `HTTP/d.d` CRLF shortcut at `s_req_http_start`, the CR LF shortcut at
 the end of `s_header_value`, and the direct transitions through the header line, the chunk
 frame and the end of the headers. Each is a separate hunk (and a separate commit) so the planned
 refresh below can re-apply or drop them one at a time; any other edit here should
-stay reconcilable with upstream as a plain diff.
+stay reconcilable with upstream as a plain diff. The hardening checks (ARCHITECTURE.md,
+"Strictness") carry upstream's 2.8-2.9.4 request-framing fixes and llhttp's rules.
 
 Consumed by [Kronuz/http](https://github.com/Kronuz/http) (the HTTP application
 layer): it parses with this fork rather than a stricter parser like llhttp because
 this one accepts arbitrary request methods, which Xapiand's custom REST verbs
 (`COUNT`, `INFO`, `DUMP`, `RESTORE`, …) require.
 
-**Planned refresh (separate commit):** the fork is pinned at version 2.7.1; the
-Joyent upstream's final release is 2.9.4. A future change rebases the fork onto
-2.9.4 to pick up ~2.5 years of security/correctness fixes, re-applying the small
-extraction deltas above. Keep edits reconcilable so that rebase stays a plain diff.
+**Upstream fixes:** the fork is version 2.7.1; the Joyent upstream's final release is
+2.9.4. The hardening carries upstream's request-framing and memory-safety fixes
+(9f489a4, 9ce7316, 01da95f, 3502589, 2a0d106, 7d5c99d); the response-side ones (05525c5,
+3b0da34, 25de6ed), a7c2e86 (`nread` at a buffer boundary), 3123273 (`parse_url("")`)
+and 0ae8d93 (runtime header limit) are not in yet. Keep edits reconcilable so that each
+can still be applied as a plain diff.

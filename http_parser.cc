@@ -28,7 +28,6 @@
 #include <assert.h>          // for assert
 #include <stddef.h>          // for NULL, size_t
 #include <ctype.h>
-#include <stdlib.h>          // for strtoul
 #include <string.h>          // for memset, memcmp
 #include <limits.h>          // for ULLONG_MAX
 
@@ -362,6 +361,58 @@ static const uint8_t normal_url_char[32] = {
 
 #define start_state (parser->type == HTTP_REQUEST ? s_start_req : s_start_res)
 
+/* Unless lenient, the HTTP versions a message may carry (llhttp's: 0.9, 1.0, 1.1, 2.0) */
+#define KNOWN_VERSION(major, minor)                                            \
+  (((major) == 1 && (minor) <= 1) || ((major) == 2 && (minor) == 0) ||        \
+   ((major) == 0 && (minor) == 9))
+#define VERSION_KNOWN(parser) KNOWN_VERSION((parser)->http_major, (parser)->http_minor)
+
+/* Unless lenient, a chunk extension is checked byte by byte; parser->index is
+ * where in the grammar the last byte left it. */
+enum chunk_ext_state {
+  CHUNK_EXT_START = 0,   /* after ';': a name follows */
+  CHUNK_EXT_NAME,        /* in the name */
+  CHUNK_EXT_EQUALS,      /* after '=': a token or a quoted string follows */
+  CHUNK_EXT_TOKEN,       /* in a token value */
+  CHUNK_EXT_QUOTED,      /* in a quoted string */
+  CHUNK_EXT_ESCAPE,      /* after a backslash in a quoted string */
+  CHUNK_EXT_CLOSED       /* after the closing quote */
+};
+
+/* Takes one byte of a chunk-size line after the size; 0 if it may not come here. */
+static int chunk_ext_char(http_parser *parser, char ch) {
+  const unsigned char c = (unsigned char) ch;
+  const int vchar = c > 0x20 && c != 0x7f;  /* VCHAR or obs-text */
+  switch (parser->index) {
+    case CHUNK_EXT_START:
+      if (!STRICT_TOKEN(ch)) return 0;
+      parser->index = CHUNK_EXT_NAME;
+      return 1;
+    case CHUNK_EXT_NAME:
+    case CHUNK_EXT_TOKEN:
+      if (STRICT_TOKEN(ch)) return 1;
+      if (ch == '=' && parser->index == CHUNK_EXT_NAME) { parser->index = CHUNK_EXT_EQUALS; return 1; }
+      if (ch == ';') { parser->index = CHUNK_EXT_START; return 1; }
+      return ch == CR;
+    case CHUNK_EXT_EQUALS:
+      if (ch == '"') { parser->index = CHUNK_EXT_QUOTED; return 1; }
+      if (!STRICT_TOKEN(ch)) return 0;
+      parser->index = CHUNK_EXT_TOKEN;
+      return 1;
+    case CHUNK_EXT_QUOTED:
+      if (ch == '"') { parser->index = CHUNK_EXT_CLOSED; return 1; }
+      if (ch == '\\') { parser->index = CHUNK_EXT_ESCAPE; return 1; }
+      return vchar || ch == ' ' || ch == '\t';
+    case CHUNK_EXT_ESCAPE:
+      parser->index = CHUNK_EXT_QUOTED;
+      return vchar || ch == ' ' || ch == '\t';
+    case CHUNK_EXT_CLOSED:
+      if (ch == ';') { parser->index = CHUNK_EXT_START; return 1; }
+      return ch == CR;
+  }
+  return 0;
+}
+
 
 #if HTTP_PARSER_STRICT
 # define STRICT_CHECK(cond)                                          \
@@ -391,6 +442,7 @@ static struct {
 int http_message_needs_eof(const http_parser *parser);
 
 const char* find_crlf(const char* p, const char* data, size_t len);
+const char* find_value_end(const char* p, const char* data, size_t len);
 
 
 // scan_crlf: the first CR or LF in [p, end), or end if there is none. Whole 16-byte
@@ -444,6 +496,61 @@ HTTP_PARSER_NOINLINE const char* find_crlf(const char* p, const char* data, size
   limit = MIN(limit, HTTP_MAX_HEADER_SIZE);
 
   r = scan_crlf(p, p + limit);
+  return r == p + limit ? data + len : r;
+}
+
+// scan_value_end: the first byte in [p, end) that a header value may not hold
+// (IS_HEADER_CHAR: a control byte other than HT, or DEL), CR and LF included, or end.
+// The same blocks and tail as scan_crlf.
+static inline const char* scan_value_end(const char* p, const char* end) {
+#if defined(HTTP_PARSER_NEON)
+  const uint8x16_t sp = vdupq_n_u8(' ');
+  const uint8x16_t ht = vdupq_n_u8('\t');
+  const uint8x16_t del = vdupq_n_u8(127);
+  while (end - p >= 16) {
+    const uint8x16_t v = vld1q_u8((const uint8_t*) p);
+    const uint8x16_t m = vorrq_u8(vbicq_u8(vcltq_u8(v, sp), vceqq_u8(v, ht)), vceqq_u8(v, del));
+    const uint64_t bits = vget_lane_u64(
+        vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(m), 4)), 0);
+    if (bits) {
+      return p + (__builtin_ctzll(bits) >> 2);
+    }
+    p += 16;
+  }
+#elif defined(HTTP_PARSER_SSE2)
+  const __m128i us = _mm_set1_epi8(0x1f);
+  const __m128i ht = _mm_set1_epi8('\t');
+  const __m128i del = _mm_set1_epi8(127);
+  while (end - p >= 16) {
+    const __m128i v = _mm_loadu_si128((const __m128i*) p);
+    /* v <= 0x1f unsigned: min(v, 0x1f) == v */
+    const __m128i ctl = _mm_cmpeq_epi8(_mm_min_epu8(v, us), v);
+    const unsigned bits = (unsigned) _mm_movemask_epi8(_mm_or_si128(
+        _mm_andnot_si128(_mm_cmpeq_epi8(v, ht), ctl), _mm_cmpeq_epi8(v, del)));
+    if (bits) {
+      return p + __builtin_ctz(bits);
+    }
+    p += 16;
+  }
+#endif
+  while (p < end) {
+    if (!IS_HEADER_CHAR(*p) || *p == CR || *p == LF) {
+      return p;
+    }
+    ++p;
+  }
+  return end;
+}
+
+// find_value_end: find_crlf for a parser that is not lenient: it also stops at a byte
+// a header value may not hold, which the loop in s_header_value then rejects.
+HTTP_PARSER_NOINLINE const char* find_value_end(const char* p, const char* data, size_t len) {
+  size_t limit = data + len - p;
+  const char* r;
+
+  limit = MIN(limit, HTTP_MAX_HEADER_SIZE);
+
+  r = scan_value_end(p, p + limit);
   return r == p + limit ? data + len : r;
 }
 
@@ -841,7 +948,8 @@ reexecute:
           break;
         }
 
-        if (!IS_NUM(ch)) {
+        /* Unless lenient: one digit (RFC 9112: HTTP/DIGIT.DIGIT) */
+        if (!IS_NUM(ch) || !lenient) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
@@ -865,6 +973,11 @@ reexecute:
         }
 
         parser->http_minor = ch - '0';
+        /* Unless lenient: the version is complete, and must be a known one */
+        if (!lenient && !VERSION_KNOWN(parser)) {
+          SET_ERRNO(HPE_INVALID_VERSION);
+          goto error;
+        }
         UPDATE_STATE(s_res_http_minor);
         break;
 
@@ -876,7 +989,7 @@ reexecute:
           break;
         }
 
-        if unlikely(!IS_NUM(ch)) {
+        if unlikely(!IS_NUM(ch) || !lenient) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
@@ -918,6 +1031,10 @@ reexecute:
               UPDATE_STATE(s_res_line_almost_done);
               break;
             case LF:
+              if (!lenient) {
+                SET_ERRNO(HPE_CR_EXPECTED);
+                goto error;
+              }
               UPDATE_STATE(s_header_field_start);
               break;
             default:
@@ -946,6 +1063,10 @@ reexecute:
         }
 
         if (ch == LF) {
+          if (!lenient) {
+            SET_ERRNO(HPE_CR_EXPECTED);
+            goto error;
+          }
           UPDATE_STATE(s_header_field_start);
           break;
         }
@@ -964,6 +1085,10 @@ reexecute:
         }
 
         if (ch == LF) {
+          if (!lenient) {
+            SET_ERRNO(HPE_CR_EXPECTED);
+            goto error;
+          }
           UPDATE_STATE(s_header_field_start);
           CALLBACK_DATA(status);
           break;
@@ -1121,8 +1246,13 @@ reexecute:
             UPDATE_STATE(s_req_http_start);
             CALLBACK_DATA(url);
             break;
-          case CR:
           case LF:
+            if (!lenient) {
+              SET_ERRNO(HPE_CR_EXPECTED);
+              goto error;
+            }
+            /* FALLTHROUGH */
+          case CR:
             parser->http_major = 0;
             parser->http_minor = 9;
             UPDATE_STATE((ch == CR) ?
@@ -1173,7 +1303,8 @@ reexecute:
             if ((data + len) - p >= 10 &&
                 parser->nread + 9 <= HTTP_MAX_HEADER_SIZE &&
                 memcmp(p, "HTTP/", 5) == 0 && p[5] >= '1' && p[5] <= '9' &&
-                p[6] == '.' && IS_NUM(p[7]) && p[8] == CR && p[9] == LF) {
+                p[6] == '.' && IS_NUM(p[7]) && p[8] == CR && p[9] == LF &&
+                (lenient || KNOWN_VERSION(p[5] - '0', p[7] - '0'))) {
               parser->http_major = (unsigned short) (p[5] - '0');
               parser->http_minor = (unsigned short) (p[7] - '0');
               parser->nread += 9;
@@ -1231,7 +1362,8 @@ reexecute:
           break;
         }
 
-        if unlikely(!IS_NUM(ch)) {
+        /* Unless lenient: one digit (RFC 9112: HTTP/DIGIT.DIGIT) */
+        if unlikely(!IS_NUM(ch) || !lenient) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
@@ -1255,6 +1387,11 @@ reexecute:
         }
 
         parser->http_minor = ch - '0';
+        /* Unless lenient: the version is complete, and must be a known one */
+        if (!lenient && !VERSION_KNOWN(parser)) {
+          SET_ERRNO(HPE_INVALID_VERSION);
+          goto error;
+        }
         UPDATE_STATE(s_req_http_minor);
         break;
 
@@ -1267,13 +1404,17 @@ reexecute:
         }
 
         if (ch == LF) {
+          if (!lenient) {
+            SET_ERRNO(HPE_CR_EXPECTED);
+            goto error;
+          }
           UPDATE_STATE(s_header_field_start);
           break;
         }
 
         /* XXX allow spaces after digit? */
 
-        if unlikely(!IS_NUM(ch)) {
+        if unlikely(!IS_NUM(ch) || !lenient) {
           SET_ERRNO(HPE_INVALID_VERSION);
           goto error;
         }
@@ -1313,6 +1454,10 @@ reexecute:
         if (ch == LF) {
           /* they might be just sending \n instead of \r\n so this would be
            * the second \n to denote the end of headers*/
+          if (!lenient) {
+            SET_ERRNO(HPE_CR_EXPECTED);
+            goto error;
+          }
           UPDATE_STATE(s_headers_almost_done);
           goto headers_almost_done;
         }
@@ -1508,6 +1653,10 @@ header_field_begin:
         }
 
         if (ch == LF) {
+          if (!lenient) {
+            SET_ERRNO(HPE_CR_EXPECTED);
+            goto error;
+          }
           UPDATE_STATE(s_header_value_discard_lws);
           break;
         }
@@ -1516,6 +1665,12 @@ header_field_begin:
 
       case s_header_value_start:
       {
+        /* Unless lenient, every byte of a value is checked, the first one too */
+        if (!lenient && !IS_HEADER_CHAR(ch)) {
+          SET_ERRNO(HPE_INVALID_HEADER_TOKEN);
+          goto error;
+        }
+
         MARK(header_value);
 
         UPDATE_STATE(s_header_value);
@@ -1534,7 +1689,7 @@ header_field_begin:
             if ('c' == c) {
               parser->header_state = h_matching_transfer_encoding_chunked;
             } else {
-              parser->header_state = h_general;
+              parser->header_state = lenient ? h_general : h_transfer_encoding_other;
             }
             break;
 
@@ -1593,6 +1748,11 @@ header_field_begin:
           }
 
           if (ch == LF) {
+            if (!lenient) {
+              parser->header_state = h_state;
+              SET_ERRNO(HPE_CR_EXPECTED);
+              goto error;
+            }
             UPDATE_STATE(s_header_almost_done);
             COUNT_HEADER_SIZE(p - start);
             parser->header_state = h_state;
@@ -1609,8 +1769,11 @@ header_field_begin:
 
           switch (h_state) {
             case h_general:
+            case h_transfer_encoding_other:
             {
-              p = find_crlf(p, data, len);
+              /* Unless lenient the run also stops at a byte a value may not
+               * hold, which the check above then rejects. */
+              p = lenient ? find_crlf(p, data, len) : find_value_end(p, data, len);
               --p;
 
               break;
@@ -1625,7 +1788,12 @@ header_field_begin:
             {
               uint64_t t;
 
-              if (ch == ' ') break;
+              if (ch == ' ') {
+                /* Unless lenient, only spaces may follow the digits
+                 * (`Content-Length: 4 2` is not 42) */
+                if (!lenient) h_state = h_content_length_ws;
+                break;
+              }
 
               if unlikely(!IS_NUM(ch)) {
                 SET_ERRNO(HPE_INVALID_CONTENT_LENGTH);
@@ -1648,12 +1816,18 @@ header_field_begin:
               break;
             }
 
+            case h_content_length_ws:
+              if (ch == ' ') break;
+              SET_ERRNO(HPE_INVALID_CONTENT_LENGTH);
+              parser->header_state = h_state;
+              goto error;
+
             /* Transfer-Encoding: chunked */
             case h_matching_transfer_encoding_chunked:
               parser->index++;
               if (parser->index > sizeof(CHUNKED)-1
                   || c != CHUNKED[parser->index]) {
-                h_state = h_general;
+                h_state = lenient ? h_general : h_transfer_encoding_other;
               } else if (parser->index == sizeof(CHUNKED)-2) {
                 h_state = h_transfer_encoding_chunked;
               }
@@ -1717,7 +1891,7 @@ header_field_begin:
               break;
 
             case h_transfer_encoding_chunked:
-              if (ch != ' ') h_state = h_general;
+              if (ch != ' ') h_state = lenient ? h_general : h_transfer_encoding_other;
               break;
 
             case h_connection_keep_alive:
@@ -1782,6 +1956,11 @@ header_field_begin:
       case s_header_value_lws:
       {
         if (ch == ' ' || ch == '\t') {
+          /* Unless lenient, obs-fold is an error (RFC 9112 section 5.2) */
+          if (!lenient) {
+            SET_ERRNO(HPE_INVALID_HEADER_TOKEN);
+            goto error;
+          }
           UPDATE_STATE(s_header_value_start);
           REEXECUTE();
         }
@@ -1795,7 +1974,23 @@ header_field_begin:
             parser->flags |= F_CONNECTION_CLOSE;
             break;
           case h_transfer_encoding_chunked:
+            /* Unless lenient, a request is chunked once and last: a second
+             * Transfer-Encoding header would apply a coding after it. */
+            if (!lenient && parser->type == HTTP_REQUEST && (parser->flags & F_CHUNKED)) {
+              SET_ERRNO(HPE_INVALID_TRANSFER_ENCODING);
+              goto error;
+            }
             parser->flags |= F_CHUNKED;
+            break;
+          case h_matching_transfer_encoding_chunked:
+          case h_transfer_encoding_other:
+            /* Unless lenient, a request's Transfer-Encoding is "chunked" and
+             * nothing else: this parser decodes no other coding, and the body's
+             * length would be unknown (RFC 9112 section 6.3). */
+            if (!lenient && parser->type == HTTP_REQUEST) {
+              SET_ERRNO(HPE_INVALID_TRANSFER_ENCODING);
+              goto error;
+            }
             break;
           case h_connection_upgrade:
             parser->flags |= F_CONNECTION_UPGRADE;
@@ -1818,10 +2013,29 @@ header_field_begin:
       case s_header_value_discard_lws:
       {
         if (ch == ' ' || ch == '\t') {
+          /* Unless lenient, obs-fold is an error (RFC 9112 section 5.2) */
+          if (!lenient) {
+            SET_ERRNO(HPE_INVALID_HEADER_TOKEN);
+            goto error;
+          }
           UPDATE_STATE(s_header_value_discard_ws);
           break;
         } else {
           switch (parser->header_state) {
+            case h_content_length:
+              /* Unless lenient, an empty Content-Length is an error */
+              if (!lenient) {
+                SET_ERRNO(HPE_INVALID_CONTENT_LENGTH);
+                goto error;
+              }
+              break;
+            case h_transfer_encoding:
+              /* Unless lenient, so is a request's empty Transfer-Encoding */
+              if (!lenient && parser->type == HTTP_REQUEST) {
+                SET_ERRNO(HPE_INVALID_TRANSFER_ENCODING);
+                goto error;
+              }
+              break;
             case h_connection_keep_alive:
               parser->flags |= F_CONNECTION_KEEP_ALIVE;
               break;
@@ -2048,7 +2262,9 @@ header_field_begin:
         unhex_val = unhex[(unsigned char)ch];
 
         if (unhex_val == -1) {
-          if (ch == ';' || ch == ' ') {
+          /* Unless lenient: only ';' (an extension) after the size */
+          if (ch == ';' || (ch == ' ' && lenient)) {
+            parser->index = lenient ? parser->index : CHUNK_EXT_START;
             UPDATE_STATE(s_chunk_parameters);
             break;
           }
@@ -2075,6 +2291,20 @@ header_field_begin:
       case s_chunk_parameters:
       {
         assert(parser->flags & F_CHUNKED);
+        if (!lenient) {
+          /* chunk-ext = *( ";" chunk-ext-name [ "=" ( token / quoted-string ) ] )
+           * (RFC 9112 section 7.1.1, without whitespace), parser->index the place
+           * in it: a malformed extension, or a bare LF or another control byte in
+           * one, is an error. */
+          if (!chunk_ext_char(parser, ch)) {
+            SET_ERRNO(HPE_INVALID_CHUNK_SIZE);
+            goto error;
+          }
+          if (ch == CR) {
+            UPDATE_STATE(s_chunk_size_almost_done);
+          }
+          break;
+        }
         /* just ignore this shit. TODO check for overflow */
         if (ch == CR) {
           UPDATE_STATE(s_chunk_size_almost_done);
@@ -2538,12 +2768,20 @@ http_parser_parse_url(const char *buf, size_t buflen, int is_connect,
   }
 
   if (u->field_set & (1 << UF_PORT)) {
-    /* Don't bother with endp; we've already validated the string */
-    unsigned long v = strtoul(buf + u->field_data[UF_PORT].off, NULL, 10);
+    /* The port's own digits only: strtoul() would read on past buflen when
+     * buf is not NUL-terminated (upstream 9ce7316). The characters are
+     * already validated as [0-9]. */
+    const char* q = buf + u->field_data[UF_PORT].off;
+    const char* end = q + u->field_data[UF_PORT].len;
+    unsigned long v = 0;
 
-    /* Ports have a max value of 2^16 */
-    if (v > 0xffff) {
-      return 1;
+    for (; q < end; q++) {
+      v = v * 10 + (unsigned long) (*q - '0');
+
+      /* Ports have a max value of 2^16 */
+      if (v > 0xffff) {
+        return 1;
+      }
     }
 
     u->port = (uint16_t) v;

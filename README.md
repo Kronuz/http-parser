@@ -20,6 +20,10 @@ reflective enums and Xapiand's extra verbs.
 - **Zero copy, zero allocation.** Callbacks receive pointers into your input.
 - **Complete HTTP/1.x framing.** `Content-Length` and chunked bodies, keep-alive,
   upgrades, and a typed error code for malformed input.
+- **Strict where smuggling lives.** Bare LF, obs-fold, control bytes in values, a
+  request `Transfer-Encoding` other than `chunked`, malformed `Content-Length` and chunk
+  lines are errors, as in llhttp, whose own conformance suite runs in CI;
+  `lenient_http_headers = 1` restores http_parser 2.7.1's behavior.
 - **Reflective enums.** Methods, statuses, and errors are
   [enum-reflection](https://github.com/Kronuz/enum-reflection) enums, so they
   print and parse by name.
@@ -31,7 +35,8 @@ reflective enums and Xapiand's extra verbs.
 Requires a C++20 compiler and CMake 3.14 or newer; it fetches enum-reflection.
 It compiles one source file, `http_parser.cc`. CI builds it on Linux (x86_64,
 arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan, and TSan builds, a
-build without the vector code, a non-strict build, and a nightly fuzz run.
+build without the vector code, a non-strict build, and a nightly fuzz run; the tests
+include llhttp's conformance suite (`test/conformance.cc`).
 
 ```cmake
 include(FetchContent)

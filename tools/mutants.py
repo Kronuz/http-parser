@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Mutation check of the bulk-scan paths in http_parser.cc.
+"""Mutation check of the bulk-scan paths and the hardening checks in http_parser.cc.
 
 Each mutant breaks one rule of one fast path (a byte counted wrongly, a limit moved, a
-flag dropped, a vector loop that reads past its span, ...). The differential test
-(test/diff.cc) has to fail on every one of them: a mutant that survives is a hole in the
-test. Run it after a change to a fast path, and when adding one, add its mutants here.
+flag dropped, a vector loop that reads past its span, ...) or takes out one check the
+parser makes unless lenient_http_headers is set. The differential test (test/diff.cc) has
+to fail on every one of them: a mutant that survives is a hole in the test. Run it after a
+change to a fast path or a check, and when adding one, add its mutants here.
 
     tools/mutants.py BUILD_DIR [--cxx c++] [--sanitize address,undefined] [--only NAME] [-j N]
 
@@ -58,13 +59,13 @@ MUTANTS = [
     ("crlf-wrong-state", "all", "UPDATE_STATE(s_header_value_lws);\n          goto header_value_lws;", "UPDATE_STATE(s_header_field_start);\n          goto header_field_start;"),
     # find_crlf
     ("find-crlf-no-lf", "all", "if (*p == CR || *p == LF) {", "if (*p == CR) {"),
-    ("find-crlf-limit", "all", "limit = MIN(limit, HTTP_MAX_HEADER_SIZE);", "limit = MIN(limit, HTTP_MAX_HEADER_SIZE + 1);"),
-    ("find-crlf-not-found", "all", "return r == p + limit ? data + len : r;", "return r;"),
-    ("find-crlf-neon-nibble", "neon", "return p + (__builtin_ctzll(bits) >> 2);\n    }\n    p += 16;\n  }\n#elif", "return p + (__builtin_ctzll(bits) >> 3);\n    }\n    p += 16;\n  }\n#elif"),
+    ("find-crlf-limit", "all", "limit = MIN(limit, HTTP_MAX_HEADER_SIZE);\n\n  r = scan_crlf(", "limit = MIN(limit, HTTP_MAX_HEADER_SIZE + 1);\n\n  r = scan_crlf("),
+    ("find-crlf-not-found", "all", "  r = scan_crlf(p, p + limit);\n  return r == p + limit ? data + len : r;", "  r = scan_crlf(p, p + limit);\n  return r;"),
+    ("find-crlf-neon-nibble", "neon", "vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(m), 4)), 0);\n    if (bits) {\n      return p + (__builtin_ctzll(bits) >> 2);\n    }\n    p += 16;\n  }\n#elif defined(HTTP_PARSER_SSE2)\n  const __m128i cr", "vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(m), 4)), 0);\n    if (bits) {\n      return p + (__builtin_ctzll(bits) >> 3);\n    }\n    p += 16;\n  }\n#elif defined(HTTP_PARSER_SSE2)\n  const __m128i cr"),
     ("find-crlf-neon-no-lf", "neon", "vorrq_u8(vceqq_u8(v, cr), vceqq_u8(v, lf))", "vceqq_u8(v, cr)"),
     ("find-crlf-sse2-no-cr", "sse2", "_mm_or_si128(_mm_cmpeq_epi8(v, cr), _mm_cmpeq_epi8(v, lf))", "_mm_cmpeq_epi8(v, lf)"),
-    ("find-crlf-neon-overread", "neon+san", "  while (end - p >= 16) {\n    const uint8x16_t v", "  while (end - p > 0) {\n    const uint8x16_t v"),
-    ("find-crlf-sse2-overread", "sse2+san", "  while (end - p >= 16) {\n    const __m128i v", "  while (end - p > 0) {\n    const __m128i v"),
+    ("find-crlf-neon-overread", "neon+san", "  while (end - p >= 16) {\n    const uint8x16_t v = vld1q_u8((const uint8_t*) p);\n    const uint8x16_t m = vorrq_u8(vceqq_u8", "  while (end - p > 0) {\n    const uint8x16_t v = vld1q_u8((const uint8_t*) p);\n    const uint8x16_t m = vorrq_u8(vceqq_u8"),
+    ("find-crlf-sse2-overread", "sse2+san", "  while (end - p >= 16) {\n    const __m128i v = _mm_loadu_si128((const __m128i*) p);\n    const unsigned bits", "  while (end - p > 0) {\n    const __m128i v = _mm_loadu_si128((const __m128i*) p);\n    const unsigned bits"),
     # the header states that go straight to the next state
     ("next-char-uncounted", "all", "  COUNT_HEADER_SIZE(1);\n\n/* The same for a state", "\n\n/* The same for a state"),
     ("next-char-unchecked", "all", "  COUNT_HEADER_SIZE(1);\n\n/* The same for a state", "  ++parser->nread;\n\n/* The same for a state"),
@@ -84,6 +85,40 @@ MUTANTS = [
     ("body-first-byte-counted", "all", "          NEXTCHAR();\n          goto body_identity;", "          NEXTCHAR_COUNTED();\n          goto body_identity;"),
     ("body-done-skips-state", "all", "          CALLBACK_DATA_(body, p - body_mark + 1, p - data);\n          goto message_done;", "          CALLBACK_DATA_(body, p - body_mark + 1, p - data);\n          break;"),
     ("trailer-done-skips-state", "all", "          CALLBACK_NOTIFY_NOADVANCE(chunk_complete);\n          goto message_done;", "          CALLBACK_NOTIFY_NOADVANCE(chunk_complete);\n          break;"),
+    # find_value_end (the value scan unless lenient)
+    ("value-end-no-ctl", "all", "if (!IS_HEADER_CHAR(*p) || *p == CR || *p == LF) {", "if (*p == CR || *p == LF) {"),
+    ("value-end-no-lf", "all", "if (!IS_HEADER_CHAR(*p) || *p == CR || *p == LF) {", "if ((!IS_HEADER_CHAR(*p) && *p != LF) || *p == CR) {"),
+    ("value-end-neon-nibble", "neon", "      return p + (__builtin_ctzll(bits) >> 2);\n    }\n    p += 16;\n  }\n#elif defined(HTTP_PARSER_SSE2)\n  const __m128i us", "      return p + (__builtin_ctzll(bits) >> 3);\n    }\n    p += 16;\n  }\n#elif defined(HTTP_PARSER_SSE2)\n  const __m128i us"),
+    ("value-end-not-found", "all", "  r = scan_value_end(p, p + limit);\n  return r == p + limit ? data + len : r;", "  r = scan_value_end(p, p + limit);\n  return r;"),
+    ("value-end-strict-uses-crlf", "all", "p = lenient ? find_crlf(p, data, len) : find_value_end(p, data, len);", "p = find_crlf(p, data, len);"),
+    ("value-end-neon-no-ctl", "neon", "vorrq_u8(vbicq_u8(vcltq_u8(v, sp), vceqq_u8(v, ht)), vceqq_u8(v, del))", "vorrq_u8(vceqq_u8(v, vdupq_n_u8(CR)), vceqq_u8(v, vdupq_n_u8(LF)))"),
+    ("value-end-neon-takes-del", "neon", "vorrq_u8(vbicq_u8(vcltq_u8(v, sp), vceqq_u8(v, ht)), vceqq_u8(v, del))", "vbicq_u8(vcltq_u8(v, sp), vceqq_u8(v, ht))"),
+    ("value-end-sse2-no-ctl", "sse2", "const __m128i ctl = _mm_cmpeq_epi8(_mm_min_epu8(v, us), v);", "const __m128i ctl = _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(CR)), _mm_cmpeq_epi8(v, _mm_set1_epi8(LF)));"),
+    ("value-end-sse2-takes-del", "sse2", "_mm_andnot_si128(_mm_cmpeq_epi8(v, ht), ctl), _mm_cmpeq_epi8(v, del)));", "_mm_andnot_si128(_mm_cmpeq_epi8(v, ht), ctl), _mm_setzero_si128()));"),
+    ("value-end-neon-overread", "neon+san", "  while (end - p >= 16) {\n    const uint8x16_t v = vld1q_u8((const uint8_t*) p);\n    const uint8x16_t m = vorrq_u8(vbicq_u8", "  while (end - p > 0) {\n    const uint8x16_t v = vld1q_u8((const uint8_t*) p);\n    const uint8x16_t m = vorrq_u8(vbicq_u8"),
+    ("value-end-sse2-overread", "sse2+san", "  while (end - p >= 16) {\n    const __m128i v = _mm_loadu_si128((const __m128i*) p);\n    /* v <= 0x1f", "  while (end - p > 0) {\n    const __m128i v = _mm_loadu_si128((const __m128i*) p);\n    /* v <= 0x1f"),
+    # each hardening check (unless lenient), taken out: test/diff.cc's hardening sweep must fail
+    ("harden-value-first-byte", "all", "        if (!lenient && !IS_HEADER_CHAR(ch)) {\n          SET_ERRNO(HPE_INVALID_HEADER_TOKEN);\n          goto error;\n        }\n\n        MARK(header_value);", "        MARK(header_value);"),
+    ("harden-lf-in-value", "all", "            if (!lenient) {\n              parser->header_state = h_state;\n              SET_ERRNO(HPE_CR_EXPECTED);", "            if (false) {\n              parser->header_state = h_state;\n              SET_ERRNO(HPE_CR_EXPECTED);"),
+    ("harden-lf-empty-value", "all", "          if (!lenient) {\n            SET_ERRNO(HPE_CR_EXPECTED);\n            goto error;\n          }\n          UPDATE_STATE(s_header_value_discard_lws);", "          UPDATE_STATE(s_header_value_discard_lws);"),
+    ("harden-lf-headers-end", "all", "          if (!lenient) {\n            SET_ERRNO(HPE_CR_EXPECTED);\n            goto error;\n          }\n          UPDATE_STATE(s_headers_almost_done);", "          UPDATE_STATE(s_headers_almost_done);"),
+    ("harden-lf-request-line", "all", "          if (!lenient) {\n            SET_ERRNO(HPE_CR_EXPECTED);\n            goto error;\n          }\n          UPDATE_STATE(s_header_field_start);\n          break;\n        }\n\n        /* XXX", "          UPDATE_STATE(s_header_field_start);\n          break;\n        }\n\n        /* XXX"),
+    ("harden-lf-http09", "all", "          case LF:\n            if (!lenient) {", "          case LF:\n            if (false) {"),
+    ("harden-lf-status", "all", "          if (!lenient) {\n            SET_ERRNO(HPE_CR_EXPECTED);\n            goto error;\n          }\n          UPDATE_STATE(s_header_field_start);\n          CALLBACK_DATA(status);", "          UPDATE_STATE(s_header_field_start);\n          CALLBACK_DATA(status);"),
+    ("harden-fold", "all", "          /* Unless lenient, obs-fold is an error (RFC 9112 section 5.2) */\n          if (!lenient) {\n            SET_ERRNO(HPE_INVALID_HEADER_TOKEN);\n            goto error;\n          }\n          UPDATE_STATE(s_header_value_start);", "          UPDATE_STATE(s_header_value_start);"),
+    ("harden-fold-empty", "all", "          /* Unless lenient, obs-fold is an error (RFC 9112 section 5.2) */\n          if (!lenient) {\n            SET_ERRNO(HPE_INVALID_HEADER_TOKEN);\n            goto error;\n          }\n          UPDATE_STATE(s_header_value_discard_ws);", "          UPDATE_STATE(s_header_value_discard_ws);"),
+    ("harden-te-other", "all", "            if (!lenient && parser->type == HTTP_REQUEST) {\n              SET_ERRNO(HPE_INVALID_TRANSFER_ENCODING);\n              goto error;\n            }\n            break;\n          case h_connection_upgrade:", "            break;\n          case h_connection_upgrade:"),
+    ("harden-te-twice", "all", "if (!lenient && parser->type == HTTP_REQUEST && (parser->flags & F_CHUNKED)) {", "if (false) {"),
+    ("harden-te-empty", "all", "              /* Unless lenient, so is a request's empty Transfer-Encoding */\n              if (!lenient && parser->type == HTTP_REQUEST) {", "              /* Unless lenient, so is a request's empty Transfer-Encoding */\n              if (false) {"),
+    ("harden-cl-ws", "all", "if (!lenient) h_state = h_content_length_ws;", ""),
+    ("harden-cl-empty", "all", "              /* Unless lenient, an empty Content-Length is an error */\n              if (!lenient) {", "              /* Unless lenient, an empty Content-Length is an error */\n              if (false) {"),
+    ("harden-chunk-space", "all", "if (ch == ';' || (ch == ' ' && lenient)) {", "if (ch == ';' || ch == ' ') {"),
+    ("harden-chunk-ext", "all", "          if (!chunk_ext_char(parser, ch)) {", "          if (!chunk_ext_char(parser, ch) && false) {"),
+    ("harden-chunk-ext-quoted", "all", "      return vchar || ch == ' ' || ch == '\\t';\n    case CHUNK_EXT_ESCAPE:", "      return vchar || ch == ' ' || ch == '\\t' || ch == CR;\n    case CHUNK_EXT_ESCAPE:"),
+    ("harden-version-digits", "all", "        if unlikely(!IS_NUM(ch) || !lenient) {\n          SET_ERRNO(HPE_INVALID_VERSION);\n          goto error;\n        }\n\n        parser->http_major *= 10;", "        if unlikely(!IS_NUM(ch)) {\n          SET_ERRNO(HPE_INVALID_VERSION);\n          goto error;\n        }\n\n        parser->http_major *= 10;"),
+    ("harden-version-known-req", "all", "        parser->http_minor = ch - '0';\n        /* Unless lenient: the version is complete, and must be a known one */\n        if (!lenient && !VERSION_KNOWN(parser)) {\n          SET_ERRNO(HPE_INVALID_VERSION);\n          goto error;\n        }\n        UPDATE_STATE(s_req_http_minor);", "        parser->http_minor = ch - '0';\n        UPDATE_STATE(s_req_http_minor);"),
+    ("harden-version-known-res", "all", "        parser->http_minor = ch - '0';\n        /* Unless lenient: the version is complete, and must be a known one */\n        if (!lenient && !VERSION_KNOWN(parser)) {\n          SET_ERRNO(HPE_INVALID_VERSION);\n          goto error;\n        }\n        UPDATE_STATE(s_res_http_minor);", "        parser->http_minor = ch - '0';\n        UPDATE_STATE(s_res_http_minor);"),
+    ("harden-version-fast-path", "all", "                (lenient || KNOWN_VERSION(p[5] - '0', p[7] - '0'))) {", "                true) {"),
 ]
 
 
@@ -112,7 +147,7 @@ def run_mutant(m, args, tmp, base_objs, includes):
     except subprocess.TimeoutExpired:
         return name, "KILLED", "timeout"
     out = (r.stdout + r.stderr).strip().splitlines()
-    why = next((l for l in out if "MISMATCH" in l or "ERROR: AddressSanitizer" in l or "runtime error" in l), "exit %d" % r.returncode)
+    why = next((l for l in out if "MISMATCH" in l or "HARDENING" in l or "ERROR: AddressSanitizer" in l or "runtime error" in l), "exit %d" % r.returncode)
     return name, ("KILLED" if r.returncode != 0 else "SURVIVED"), why[:150]
 
 
