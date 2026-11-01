@@ -179,6 +179,10 @@ do {                                                                 \
 
 #define PROXY_CONNECTION "proxy-connection"
 #define CONNECTION "connection"
+/* A Transfer-Encoding field was seen: kept in parser->extra_flags, shifted
+ * down by 8, as upstream 7d5c99d keeps it */
+#define F_TRANSFER_ENCODING (1 << 8)
+
 #define CONTENT_LENGTH "content-length"
 #define TRANSFER_ENCODING "transfer-encoding"
 #define UPGRADE "upgrade"
@@ -958,6 +962,7 @@ reexecute:
       case s_start_res:
       {
         parser->flags = 0;
+        parser->extra_flags = 0;
         parser->content_length = ULLONG_MAX;
 
         switch (ch) {
@@ -1180,6 +1185,7 @@ reexecute:
         if (ch == CR || ch == LF)
           break;
         parser->flags = 0;
+        parser->extra_flags = 0;
         parser->content_length = ULLONG_MAX;
 
         if unlikely(!IS_ALPHA(ch)) {
@@ -1765,6 +1771,7 @@ header_field_begin:
             break;
 
           case h_transfer_encoding:
+            parser->extra_flags |= F_TRANSFER_ENCODING >> 8;
             /* looking for 'Transfer-Encoding: chunked' */
             if ('c' == c) {
               parser->header_state = h_matching_transfer_encoding_chunked;
@@ -2157,9 +2164,13 @@ header_field_begin:
         }
 
         /* Cannot use chunked encoding and a content-length header together
-           per the HTTP specification. */
-        if ((parser->flags & F_CHUNKED) &&
-            (parser->flags & F_CONTENTLENGTH)) {
+           per the HTTP specification. Unless lenient, nor any other
+           Transfer-Encoding: it overrides Content-Length, and a response read
+           by the length would leave the rest of its body to be read as the
+           next response (RFC 9112 section 6.3; upstream 7d5c99d, llhttp). */
+        if ((parser->flags & F_CONTENTLENGTH) &&
+            ((parser->flags & F_CHUNKED) ||
+             (!lenient && (parser->extra_flags & (F_TRANSFER_ENCODING >> 8))))) {
           SET_ERRNO(HPE_UNEXPECTED_CONTENT_LENGTH);
           goto error;
         }

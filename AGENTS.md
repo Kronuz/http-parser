@@ -150,10 +150,12 @@ is the library's only external dependency. The implementation's other include,
   `if (!lenient ...)` in the state that sees the byte; add it to the hardening sweep in
   `test/diff.cc` and a mutant that removes it to `tools/mutants.py`. A rule that changes
   framing without an error (the connection closing after an HTTP/1.0 message with
-  `Transfer-Encoding`, no body for a 1xx, 204 or 304 response, Upgrade only on a 101) is a
-  named class in `changed_class()` in `test/diff.cc`: the only place the strict parser may
-  differ from the frozen one other than by stopping with a hardening error, and every class
-  must be reached by the inputs.
+  `Transfer-Encoding`, no body for a 1xx, 204 or 304 response, Upgrade only on a 101), or
+  that stops with an error the frozen parser also uses (`HPE_UNEXPECTED_CONTENT_LENGTH` for a
+  response with `Transfer-Encoding` and `Content-Length`), is a named class in
+  `changed_class()` in `test/diff.cc`: the only place the strict parser may differ from the
+  frozen one other than by stopping with a hardening error, and every class must be reached
+  by the inputs.
   Add the new path's boundary cases to `test/diff.cc` (a sweep over every byte value
   at every position, and a buffer that ends inside the run), add its mutants to
   `tools/mutants.py`, and check that every one of them is killed.

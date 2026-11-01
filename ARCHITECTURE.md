@@ -131,8 +131,9 @@ What the parser accepts follows llhttp's default, the reference its conformance 
 (`test/conformance.cc`, llhttp's own suite) holds it to, on the points that decide
 where a message ends: every line ends in CRLF, a header value holds no control byte
 but HT and no obs-fold, a request's `Transfer-Encoding` is `chunked` alone and once and a
-response's has no coding after `chunked`, `Content-Length` is digits (spaces after them
-only) and not in a trailer section, a chunk size is followed by CRLF or well-formed
+response's has no coding after `chunked`, no message has both `Transfer-Encoding` and
+`Content-Length`, `Content-Length` is digits (spaces after them only) and not in a
+trailer section, a chunk size is followed by CRLF or well-formed
 extensions, a request carries a version, 1.0, 1.1 or 2.0 (a response 0.9 too), and a
 status is three digits after one space. Framing follows RFC 9112 section 6: the
 connection closes after an HTTP/1.0 message with `Transfer-Encoding`
@@ -140,7 +141,8 @@ connection closes after an HTTP/1.0 message with `Transfer-Encoding`
 and only a 101 is an upgrade. Each rule is one check in the state that sees the byte,
 under `!lenient`; two header states
 (`h_transfer_encoding_other`, `h_content_length_ws`) carry a header's kind to the end of
-its line, and `parser->index` the place in a chunk extension. With
+its line, `parser->index` the place in a chunk extension, and `parser->extra_flags` that
+the message has a `Transfer-Encoding` until the end of its header section. With
 `lenient_http_headers` set the checks are off and the parser is 2.7.1's again, which
 `test/diff.cc` checks against the frozen copy.
 

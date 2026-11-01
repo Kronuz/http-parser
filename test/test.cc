@@ -439,6 +439,74 @@ static void test_hardening() {
 }
 
 
+// ---------------------------------------------------------------------------
+// A response with a Transfer-Encoding other than chunked and a Content-Length:
+// Transfer-Encoding overrides the length (RFC 9112 section 6.3), so reading the
+// length leaves the rest of the body to be taken as the next response.
+// HPE_UNEXPECTED_CONTENT_LENGTH at the end of the header section, as for chunked,
+// in either order and whatever the status; lenient keeps 2.7.1's reading by length.
+// ---------------------------------------------------------------------------
+
+static void test_response_te_with_content_length() {
+	const std::string next = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nnext";
+	for (const char* head : { "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: gzip\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\nContent-Length: 5\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\nContent-Length: 5\r\n\r\n",
+			"HTTP/1.1 204 No Content\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n" }) {
+		const std::string raw = head + std::string("hello") + next;
+		const size_t end = std::strlen(head);
+		for (int lenient : { 0, 1 }) {
+			http_parser parser;
+			http_parser_init(&parser, HTTP_RESPONSE);
+			parser.lenient_http_headers = lenient;
+			Collected c;
+			parser.data = &c;
+			http_parser_settings settings = make_settings();
+			size_t parsed = http_parser_execute(&parser, &settings, raw.data(), raw.size());
+			if (!lenient) {
+				assert(HTTP_PARSER_ERRNO(&parser) == HPE_UNEXPECTED_CONTENT_LENGTH);
+				assert(parsed == end - 1);  // at the LF that ends the header section
+				assert(!c.headers_complete && !c.message_complete);
+			} else {
+				assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK && parsed == raw.size());
+				assert(c.message_complete && c.body.compare(0, 5, "hello") == 0);
+			}
+		}
+	}
+	{
+		// Requests are unchanged: a Transfer-Encoding other than chunked is refused at its
+		// own line, chunked with Content-Length at the end of the header section.
+		const char* te_cl = "POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\nhello";
+		const char* cl_chunked = "POST / HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nhello";
+		for (const char* raw : { te_cl, cl_chunked }) {
+			http_parser parser;
+			http_parser_init(&parser, HTTP_REQUEST);
+			Collected c;
+			parser.data = &c;
+			http_parser_settings settings = make_settings();
+			http_parser_execute(&parser, &settings, raw, std::strlen(raw));
+			assert(HTTP_PARSER_ERRNO(&parser) == (raw == te_cl ? HPE_INVALID_TRANSFER_ENCODING : HPE_UNEXPECTED_CONTENT_LENGTH));
+		}
+	}
+	{
+		// A Transfer-Encoding without Content-Length still reads the body until EOF.
+		const std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nhello" + next;
+		http_parser parser;
+		http_parser_init(&parser, HTTP_RESPONSE);
+		Collected c;
+		parser.data = &c;
+		http_parser_settings settings = make_settings();
+		http_parser_execute(&parser, &settings, raw.data(), raw.size());
+		assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK && !c.message_complete);
+		assert(http_should_keep_alive(&parser) == 0);
+		http_parser_execute(&parser, &settings, nullptr, 0);
+		assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK && c.message_complete && c.body == "hello" + next);
+	}
+	std::printf("http_parser response Transfer-Encoding with Content-Length OK: rejected; lenient reads the length\n");
+}
+
+
 int main() {
 	test_simple_get();
 	test_post_with_body();
@@ -448,6 +516,7 @@ int main() {
 	test_keep_alive();
 	test_header_scan_at_buffer_end();
 	test_hardening();
+	test_response_te_with_content_length();
 	std::printf("all http-parser tests passed\n");
 	return 0;
 }

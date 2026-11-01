@@ -11,6 +11,19 @@ callback, its bytes and offset, every return of `http_parser_execute()` and ever
 
 ### Changed (security)
 
+- **A `Transfer-Encoding` with a `Content-Length` is `HPE_UNEXPECTED_CONTENT_LENGTH` in a
+  response too, unless `lenient_http_headers` is set** (the security re-check's SR10). A
+  response with `Transfer-Encoding: gzip` (or `identity`, or `gzip, chunked`) and
+  `Content-Length: 5` was read by the length with the connection kept open, so whoever
+  could add the field made the rest of the body the response to the client's next
+  request. RFC 9112 section 6.3 has Transfer-Encoding override Content-Length; upstream
+  7d5c99d (2.9.3) and llhttp reject the pair. The error is at the LF that ends the header
+  section, where `chunked` with `Content-Length` already stopped, in either order and
+  whatever the status. Requests stopped before: a request's Transfer-Encoding other than
+  `chunked` is `HPE_INVALID_TRANSFER_ENCODING` at its own line. To carry "this message
+  has a Transfer-Encoding" to the end of the header section, the private `index` of
+  `struct http_parser` is 5 bits and a private `extra_flags` takes the other 2, as in
+  upstream 7d5c99d; the struct's size and every other field are unchanged.
 - **Hardening against request smuggling, on unless `lenient_http_headers` is set.** llhttp's
   conformance suite (now `test/llhttp_corpus.inc`, the CTest test `http_parser_conformance`)
   found 32 requests that this parser framed differently from llhttp, most of them the

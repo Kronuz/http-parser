@@ -41,14 +41,18 @@ alone, an empty `Transfer-Encoding`, and in a response a coding after `chunked`
 a trailer section (`HPE_INVALID_CONTENT_LENGTH`), a malformed chunk size line
 (`HPE_INVALID_CHUNK_SIZE`), an HTTP version other than 1.0, 1.1 or 2.0 in a request
 and 0.9, 1.0, 1.1 or 2.0 in a response, and a request line without one
-(`HPE_INVALID_VERSION`), and a status that is not one space and three digits
-(`HPE_INVALID_STATUS`).
+(`HPE_INVALID_VERSION`), a status that is not one space and three digits
+(`HPE_INVALID_STATUS`), and a `Transfer-Encoding` with a `Content-Length`, in a response
+too (`HPE_UNEXPECTED_CONTENT_LENGTH`, at the end of the header section).
 
 It frames what it accepts as RFC 9112 section 6 does: after an HTTP/1.0 message with
 `Transfer-Encoding`, `http_should_keep_alive()` is 0 and the next byte is
 `HPE_CLOSED_CONNECTION`; a 1xx, 204 or 304 response has no body, whatever
-`Content-Length` or `Transfer-Encoding` it carries; and only a 101 response is an
-upgrade.
+`Content-Length` or `Transfer-Encoding` it carries; only a 101 response is an
+upgrade; and a response with a `Transfer-Encoding` other than `chunked` is read until
+the connection closes. Unlike RFC 9112 and llhttp, it reads a field that lists codings
+before `chunked` (`gzip, chunked`) the same way, until the connection closes, instead of
+as chunked; `http_should_keep_alive()` is 0 there.
 
 Set `p->lenient_http_headers = 1` after `http_parser_init()` to parse as http_parser
 2.7.1 did (it also skips the header-value byte check). That turns off every rule above,

@@ -114,7 +114,8 @@ struct http_parser {
   unsigned int flags : 8;        /* F_* values from 'flags' enum; semi-public */
   unsigned int state : 7;        /* enum state from http_parser.c */
   unsigned int header_state : 7; /* enum header_state from http_parser.c */
-  unsigned int index : 7;        /* index into current matcher */
+  unsigned int index : 5;        /* index into current matcher */
+  unsigned int extra_flags : 2;  /* more F_* values, shifted down by 8 */
   /* 1: accept what http_parser 2.7.1 accepted. This turns off every check
    * against request smuggling (docs/API.md, "Strictness"): for trusted peers
    * only. */

@@ -21,8 +21,9 @@ reflective enums and Xapiand's extra verbs.
 - **Complete HTTP/1.x framing.** `Content-Length` and chunked bodies, keep-alive,
   upgrades, and a typed error code for malformed input.
 - **Strict where smuggling lives.** Bare LF, obs-fold, control bytes in values, a
-  request `Transfer-Encoding` other than `chunked`, malformed `Content-Length`, chunk and
-  status lines, and a request line without a version are errors, as in llhttp, whose own
+  request `Transfer-Encoding` other than `chunked`, `Transfer-Encoding` with
+  `Content-Length`, malformed `Content-Length`, chunk and status lines, and a request line
+  without a version are errors, as in llhttp, whose own
   conformance suite runs in CI. The connection closes after an HTTP/1.0 message with
   `Transfer-Encoding`, and a 1xx, 204 or 304 response has no body.
   `lenient_http_headers = 1` parses as http_parser 2.7.1 did, smuggling included: for

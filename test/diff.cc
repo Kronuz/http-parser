@@ -211,7 +211,8 @@ bool hardening_errno(unsigned e) {
 // hardening error: given the first event at which the parsers differ, the rule that changes it
 // (CHANGELOG.md, "Hardening"), or nullptr. Each rule's own cases, against its oracle, are in
 // the hardening sweep (section 6); here only old != new is allowed, and only for these.
-std::vector<std::pair<const char*, long>> changed = { { "http10-te-close", 0 }, { "response-upgrade-101", 0 }, { "response-no-body", 0 } };
+std::vector<std::pair<const char*, long>> changed = { { "http10-te-close", 0 }, { "response-upgrade-101", 0 }, { "response-no-body", 0 },
+	{ "response-te-cl", 0 } };
 
 const char* changed_class(const std::vector<Event>& a, const std::vector<Event>& b, size_t i) {
 	const Snap* sa = i < a.size() ? &a[i].snap : nullptr;
@@ -238,6 +239,12 @@ const char* changed_class(const std::vector<Event>& a, const std::vector<Event>&
 	}
 	if (i < b.size() && i + 1 == b.size() && b[i].kind == RET) {
 		const Snap& s = b[i].snap;
+		// RFC 9112 section 6.3: Transfer-Encoding overrides Content-Length; a response with a
+		// Transfer-Encoding other than chunked and a Content-Length is an error at the end of
+		// its header section, where the old parser read the body by the length.
+		if (s.http_errno == HPE_UNEXPECTED_CONTENT_LENGTH && s.type == HTTP_RESPONSE && (s.flags & F_CONTENTLENGTH) &&
+				!(s.flags & F_CHUNKED) && sa && sa->http_errno == HPE_OK)
+			return "response-te-cl";
 		// RFC 9112 section 6.1: after an HTTP/1.0 message with Transfer-Encoding the connection
 		// closes, and the next byte is an error where the old parser read another message.
 		if (s.http_errno == HPE_CLOSED_CONNECTION && (s.flags & F_CHUNKED) && (s.flags & F_CONNECTION_KEEP_ALIVE) &&
@@ -446,6 +453,8 @@ std::vector<Seed> corpus() {
 	res("res-101-cl", "HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: h2c\r\nContent-Length: 4\r\n\r\nbodyproto");
 	res("res-304-te", "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 	res("res-304-te-next", "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+	res("res-te-cl", "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\nhelloHTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nnext");
+	res("res-cl-te", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: identity\r\n\r\nhello");
 	res("res-200-upgrade", "HTTP/1.1 200 OK\r\nConnection: upgrade\r\nUpgrade: h2c\r\nContent-Length: 4\r\n\r\nbody");
 	// Transfer-Encoding before HTTP/1.1, then another message on the same connection.
 	req("http10-te", "POST / HTTP/1.0\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
@@ -907,6 +916,26 @@ int main(int argc, char** argv) {
 				HPE_INVALID_TRANSFER_ENCODING);
 		harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", HPE_OK);
 		harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\nuntil EOF", HPE_OK);
+		// Nor a Transfer-Encoding with a Content-Length, in either order and whatever the status:
+		// read by the length, the rest of the body would be the next response (RFC 9112 section
+		// 6.3). The error is at the LF that ends the header section, as for chunked.
+		const std::string next_res = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nnext";
+		for (const char* te : { "gzip", "identity", "gzip, chunked", "chunked, gzip", "x", "chunked" })
+			for (const char* status : { "200 OK", "204 No Content", "101 Switching Protocols" }) {
+				const std::string te_line = "Transfer-Encoding: " + std::string(te) + "\r\n", cl_line = "Content-Length: 5\r\n";
+				for (const std::string& head : { "HTTP/1.1 " + std::string(status) + "\r\n" + te_line + cl_line + "\r\n",
+						"HTTP/1.1 " + std::string(status) + "\r\n" + cl_line + "X: y\r\n" + te_line + "\r\n" })
+					harden(t_res, head + "hello" + next_res, HPE_UNEXPECTED_CONTENT_LENGTH, true, (long) head.size() - 1);
+			}
+		harden(HTTP_BOTH, "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\nhello", HPE_UNEXPECTED_CONTENT_LENGTH,
+			true, 62);
+		// A field that is not Transfer-Encoding does not count, nor one from the message before.
+		for (const char* name : { "Transfer-Encodingx", "X-Transfer-Encoding", "Transfer-Encodin" })
+			harden(t_res, "HTTP/1.1 200 OK\r\n" + std::string(name) + ": gzip\r\nContent-Length: 5\r\n\r\nhello" + next_res, HPE_OK, true, -1, 2);
+		harden(t_res, "HTTP/1.1 204 No Content\r\nTransfer-Encoding: gzip\r\n\r\n" + next_res, HPE_OK, true, -1, 2);
+		harden(HTTP_BOTH, "HTTP/1.1 204 No Content\r\nTransfer-Encoding: gzip\r\n\r\n" + next_res, HPE_OK, true, -1, 2);
+		harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nPOST / HTTP/1.1\r\nContent-Length: 2\r\n\r\nok", HPE_OK, true,
+			-1, 2);
 		// A 1xx, 204 or 304 response has no body, whatever framing it names; the next response
 		// starts right after its header section. Only a 101 is an upgrade.
 		for (const char* status : { "100 Continue", "103 Early Hints", "204 No Content", "304 Not Modified" })

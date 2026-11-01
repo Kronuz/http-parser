@@ -131,6 +131,10 @@ MUTANTS = [
     ("harden-no-body-304", "all", "           (parser->status_code / 100 == 1 || parser->status_code == 204 ||\n            parser->status_code == 304));", "           (parser->status_code / 100 == 1 || parser->status_code == 204));"),
     ("harden-no-body-upgrade", "all", "                                skipBody || !hasBody)) {", "                                (parser->flags & F_SKIPBODY) || !hasBody)) {"),
     ("harden-version-known-res", "all", "        parser->http_minor = ch - '0';\n        /* Unless lenient: the version is complete, and must be a known one */\n        if (!lenient && !VERSION_KNOWN(parser)) {\n          SET_ERRNO(HPE_INVALID_VERSION);\n          goto error;\n        }\n        UPDATE_STATE(s_res_http_minor);", "        parser->http_minor = ch - '0';\n        UPDATE_STATE(s_res_http_minor);"),
+    ("harden-te-cl", "all", "             (!lenient && (parser->extra_flags & (F_TRANSFER_ENCODING >> 8))))) {", "             false)) {"),
+    ("harden-te-cl-flag", "all", "            parser->extra_flags |= F_TRANSFER_ENCODING >> 8;\n", ""),
+    ("harden-te-cl-reset-res", "all", "      case s_start_res:\n      {\n        parser->flags = 0;\n        parser->extra_flags = 0;", "      case s_start_res:\n      {\n        parser->flags = 0;"),
+    ("harden-te-cl-reset-req", "all", "        if (ch == CR || ch == LF)\n          break;\n        parser->flags = 0;\n        parser->extra_flags = 0;\n        parser->content_length = ULLONG_MAX;\n\n        if unlikely(!IS_ALPHA(ch)) {", "        if (ch == CR || ch == LF)\n          break;\n        parser->flags = 0;\n        parser->content_length = ULLONG_MAX;\n\n        if unlikely(!IS_ALPHA(ch)) {"),
     ("harden-version-fast-path", "all", "                (lenient || KNOWN_VERSION(p[5] - '0', p[7] - '0'))) {", "                true) {"),
 ]
 
