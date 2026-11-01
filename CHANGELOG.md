@@ -7,6 +7,26 @@ differential test (`test/diff.cc`) holds every callback, its bytes and offset, e
 return of `http_parser_execute()` and every field of `struct http_parser` to the
 frozen parser in `test/http_parser_old.cc`, on 1.9 million parses per run.
 
+## 2026-11-01
+
+### Added
+
+- `test/conformance.cc` (CTest `http_parser_conformance`): llhttp's markdown suite (v9.4.3,
+  253 cases, MIT) against this parser. `tools/llhttp_corpus.mjs` turns llhttp's
+  `test/request/*.md` and `test/response/*.md` into `test/llhttp_corpus.inc`, the input
+  bytes and llhttp's expected log reduced to what http_parser's callbacks report; the
+  cases where this parser differs are listed with a category in
+  `test/llhttp_divergences.txt`, and the test fails when that list and the parser
+  disagree. Built with `-DHTTP_PARSER_LLHTTP_SOURCE_DIR`, it also runs llhttp, which
+  reproduces all 253 of its own logs. This parser differs on 90 cases: 32 are requests
+  it frames differently from llhttp (a bare LF ending a line, obs-fold, Transfer-Encoding
+  other than `chunked`, `Content-Length: 4 2`, chunk extensions, control bytes in a value,
+  versions), 13 the same kinds in responses, 13 other response cases, and 32 benign
+  (methods outside this parser's table, llhttp's lenient flags, other callbacks before an
+  error). In 19 cases one byte at a time gives other callbacks than one buffer; in two of
+  them, a control byte in a header value is accepted or rejected depending on where the
+  input is split.
+
 ## 2026-10-31
 
 ### Changed

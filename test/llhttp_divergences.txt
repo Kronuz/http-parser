@@ -1,0 +1,137 @@
+# Cases of llhttp's markdown suite (test/llhttp_corpus.inc, llhttp v9.4.3) where this parser
+# differs from llhttp's expected log, checked by test/conformance.cc. One line per case:
+#   location<TAB>category<TAB>what differs
+# split:location lines are cases where one byte at a time gives other events than one buffer.
+#
+# Categories (docs/perf/llhttp-evaluation.md has the table and the reasoning):
+#   S-bare-lf      request smuggling: LF without CR accepted as a line end
+#   S-obs-fold     request smuggling: obs-fold (a header line starting with SP/HT) accepted
+#   S-value-ctl    request smuggling: control bytes accepted in a header value (and only when
+#                  the buffer splits elsewhere: the verdict depends on segmentation)
+#   S-te           request smuggling: Transfer-Encoding lists, chunked not final, unknown or
+#                  empty codings, duplicate headers, Transfer-Encoding with Content-Length
+#   S-cl           request smuggling: Content-Length with interior blanks, or empty
+#   S-chunk        request smuggling: chunk size followed by a space, malformed chunk
+#                  extensions, LF inside an extension
+#   S-version      strictness: HTTP versions other than d.d, or not 0.9/1.0/1.1/2.0
+#   R-framing      response framing (clients only): Upgrade outside 101, a body on 304
+#   R-line         response status line strictness (extra space, one-digit status)
+#   R-callbacks    response callbacks: on_message_begin per leading CRLF, no on_status for an
+#                  empty reason
+#   B-method       benign: a method or protocol outside this parser's table (REPORT, M-SEARCH,
+#                  SOURCE, QUERY, PRI, ANNOUNCE, RTSP/, ICE/)
+#   B-lenient      benign: the case runs llhttp with a lenient flag this parser's API lacks;
+#                  this parser rejects, as llhttp does without the flag
+#   B-error        benign: both reject; the callbacks before the error differ
+#   B-stricter     benign: this parser rejects what llhttp accepts
+#   B-close-ows    `Connection: close` followed by a tab is not recognized as close
+#   B-split        benign: a slice is delivered before an error when the input is split there
+request/sample.md:394	S-bare-lf	obs-fold lines ended by bare LF parsed as headers
+request/sample.md:454	B-lenient	lenient-optional-lf-after-cr: CR without LF rejected
+request/lenient-headers.md:82	S-value-ctl	\f in a header value accepted
+request/lenient-headers.md:109	B-lenient	lenient-headers: empty header lines separated by CR rejected
+request/lenient-header-value-relaxed.md:38	S-value-ctl	\f in a header value accepted
+request/lenient-header-value-relaxed.md:66	S-bare-lf	bare LF ends an empty header value; the next line is a header
+request/method.md:4	B-method	REPORT
+request/method.md:135	B-method	M-SEARCH
+request/method.md:344	B-method	SOURCE
+request/method.md:372	B-method	SOURCE with ICE/1.0
+request/method.md:400	B-method	RTSP/1.0
+request/method.md:430	B-method	ANNOUNCE with RTSP/1.0
+request/method.md:458	B-method	PRI (HTTP/2 preface)
+request/method.md:482	B-method	QUERY
+request/connection.md:107	B-lenient	lenient-keep-alive: data after a 1.0 message rejected
+request/connection.md:342	B-close-ows	`close\t` not taken as close; the next request is parsed
+request/connection.md:392	B-lenient	lenient-keep-alive: data after close rejected
+request/connection.md:611	B-error	space before colon rejected; header slice delivered first
+request/connection.md:637	B-lenient	lenient-headers: space before colon rejected
+request/content-length.md:75	B-error	Content-Length overflow rejected; header slice delivered first
+request/content-length.md:129	S-te	Transfer-Encoding: identity with Content-Length accepted
+request/content-length.md:159	B-error	space before colon rejected; header slice delivered first
+request/content-length.md:189	B-lenient	lenient-headers: space before colon rejected
+request/content-length.md:317	B-stricter	tabs around the Content-Length value rejected
+request/content-length.md:344	S-cl	`4 2` read as 42
+request/content-length.md:370	S-cl	`13 37` read as 1337
+request/content-length.md:396	S-cl	empty Content-Length ignored
+request/content-length.md:519	B-lenient	lenient-optional-lf-after-cr: CR without LF rejected
+request/transfer-encoding.md:4	S-te	empty Transfer-Encoding with Content-Length accepted
+request/transfer-encoding.md:317	S-chunk	`2 erfrferferf`: text after a space in the chunk size line accepted
+request/transfer-encoding.md:354	S-chunk	`2;` (no extension name) accepted
+request/transfer-encoding.md:450	S-chunk	unbalanced quote in a chunk extension accepted
+request/transfer-encoding.md:490	S-te	unknown coding `pigeons` ignored: no body
+request/transfer-encoding.md:521	S-te	Transfer-Encoding: identity with Content-Length accepted
+request/transfer-encoding.md:556	S-te	identity with Content-Length: the Content-Length frames the body
+request/transfer-encoding.md:600	S-te	two empty Transfer-Encoding headers with Content-Length accepted
+request/transfer-encoding.md:639	S-te	`chunked, deflate` read as no body; the body is parsed as the next request
+request/transfer-encoding.md:670	S-te	`chunked` then `deflate` headers read as chunked
+request/transfer-encoding.md:706	S-te	`chunked, deflate` (lenient): no body
+request/transfer-encoding.md:739	S-te	duplicate Transfer-Encoding (lenient): chunked
+request/transfer-encoding.md:777	S-te	`deflate, chunked` read as no body; the chunked body is parsed as the next request
+request/transfer-encoding.md:866	S-te	`chunkedchunked` ignored: no body
+request/transfer-encoding.md:937	S-chunk	space and LF inside the chunk size line accepted
+request/transfer-encoding.md:968	S-te	`chunked` folded with `abc` (lenient-headers): no body
+request/transfer-encoding.md:1051	B-lenient	lenient-optional-lf-after-cr: chunk line without LF rejected
+request/transfer-encoding.md:1123	B-error	chunk data without CRLF rejected; body slice delivered first
+request/transfer-encoding.md:1166	B-lenient	lenient-optional-crlf-after-chunk: rejected
+request/transfer-encoding.md:1210	S-chunk	space after the chunk size accepted
+request/invalid.md:66	B-method	ANNOUNCE with HTTP/1.1: rejected at the method
+request/invalid.md:113	S-bare-lf	headers separated by bare LF accepted
+request/invalid.md:181	B-lenient	lenient-optional-lf-after-cr: rejected earlier
+request/invalid.md:254	S-bare-lf	empty header ended by bare LF; the next line is a header
+request/invalid.md:454	S-bare-lf	`Dummy: x\nContent-Length: 23`: the bare LF ends the header and the next request is smuggled in the body
+request/invalid.md:490	S-version	HTTP/5.6 accepted
+request/invalid.md:531	S-bare-lf	request line and headers ended by bare LF accepted
+request/invalid.md:568	S-bare-lf	same with lenient-all: rejected later, at the chunk size
+request/invalid.md:650	S-obs-fold	` Content-Length: 38` folded into the previous header; the body is parsed as the next request
+response/sample.md:40	B-method	RTSP/1.1 response
+response/sample.md:60	B-method	ICE/1.1 response
+response/sample.md:310	R-callbacks	no on_status for an empty reason phrase
+response/sample.md:330	S-bare-lf	status line ended by bare LF accepted
+response/sample.md:695	R-callbacks	on_message_begin for each leading CRLF
+response/connection.md:191	B-lenient	lenient-data-after-close: rejected
+response/connection.md:260	B-lenient	lenient-keep-alive: rejected
+response/connection.md:293	R-framing	101 with Content-Length: the body is read as HTTP
+response/connection.md:331	R-framing	101 with Transfer-Encoding: the body is read as HTTP
+response/connection.md:374	R-framing	200 with Upgrade taken as an upgrade
+response/connection.md:405	R-framing	200 with Upgrade and Content-Length taken as an upgrade
+response/connection.md:442	R-framing	200 with Upgrade and Transfer-Encoding taken as an upgrade
+response/connection.md:492	R-framing	304 with Content-Length: a body is read
+response/connection.md:537	R-framing	304 with Transfer-Encoding: a body is read
+response/connection.md:586	R-callbacks	on_message_begin for each leading CRLF
+response/content-length.md:168	B-stricter	tabs around the Content-Length value rejected
+response/transfer-encoding.md:4	S-te	empty Transfer-Encoding with Content-Length accepted
+response/transfer-encoding.md:28	S-chunk	space after the chunk size accepted
+response/transfer-encoding.md:98	S-te	`chunked` not last: read as chunked
+response/transfer-encoding.md:236	S-chunk	text after a space in the chunk size line accepted
+response/transfer-encoding.md:272	S-chunk	`2;` (no extension name) accepted
+response/transfer-encoding.md:369	S-chunk	unbalanced quote in a chunk extension accepted
+response/invalid.md:19	S-version	HTTP/01.1 accepted
+response/invalid.md:36	S-version	HTTP/11.1 accepted
+response/invalid.md:53	S-version	HTTP/1.01 accepted
+response/invalid.md:90	B-error	tab after the version rejected; on_message_begin for the leading CR first
+response/invalid.md:151	B-lenient	lenient-optional-lf-after-cr: rejected
+response/invalid.md:195	S-version	HTTP/5.6 accepted
+response/invalid.md:231	R-line	extra space between version and status accepted
+response/invalid.md:269	R-line	one-digit status accepted
+response/invalid.md:287	S-bare-lf	status line and headers ended by bare LF accepted
+response/invalid.md:327	S-bare-lf	status line and headers ended by bare LF accepted
+response/pipelining.md:4	R-callbacks	on_message_begin for each leading CRLF
+split:request/lenient-header-value-relaxed.md:8	S-value-ctl	\f accepted in one buffer, rejected when a call starts at it
+split:request/lenient-header-value-relaxed.md:38	S-value-ctl	\f accepted in one buffer, rejected when a call starts at it
+split:request/uri.md:148	B-split	url slice delivered before the error
+split:request/connection.md:611	B-split	header slice delivered before the error
+split:request/connection.md:637	B-split	header slice delivered before the error
+split:request/content-length.md:317	B-split	header slice delivered before the error
+split:request/content-length.md:75	B-split	header slice delivered before the error
+split:request/content-length.md:159	B-split	header slice delivered before the error
+split:request/content-length.md:189	B-split	header slice delivered before the error
+split:request/content-length.md:421	B-split	header slice delivered before the error
+split:request/transfer-encoding.md:1123	B-split	body slice delivered before the error
+split:request/transfer-encoding.md:1166	B-split	body slice delivered before the error
+split:request/invalid.md:287	B-split	header slice delivered before the error
+split:request/invalid.md:310	B-split	header slice delivered before the error
+split:request/invalid.md:372	B-split	header slice delivered before the error
+split:request/invalid.md:396	B-split	header slice delivered before the error
+split:request/invalid.md:425	B-split	header slice delivered before the error
+split:response/sample.md:574	B-split	header slice delivered before the error
+split:response/content-length.md:168	B-split	header slice delivered before the error

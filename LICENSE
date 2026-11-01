@@ -6,7 +6,9 @@ are Copyright Joyent, Inc. and other Node contributors. The Xapiand additions
 (the enum.h-based enums in http_parser_enums.h, the extra request methods, and
 the std::format support) are Copyright (c) 2015-2019 Dubalu LLC. The standalone
 extraction wiring (CMakeLists.txt, likely.h, tests, docs) is Copyright (c)
-2015-2019 Dubalu LLC.
+2015-2019 Dubalu LLC. The test vectors in test/llhttp_corpus.inc are llhttp's
+(Copyright (c) 2018 Fedor Indutny), under the MIT License whose notice that
+file carries.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
