@@ -345,6 +345,13 @@ static const uint8_t normal_url_char[32] = {
   ch = *++p;                                                  \
   COUNT_HEADER_SIZE(1);
 
+/* The same for a state whose bytes are not counted against the header size. */
+#define NEXTCHAR() \
+  if unlikely(p+1 == (data+len)) {                            \
+    break;                                                    \
+  }                                                           \
+  ch = *++p;
+
 
 /**
  * Verify that a char is a valid visible (printable) US-ASCII
@@ -1997,6 +2004,7 @@ header_field_begin:
         }
         break;
 
+      chunk_size_start:
       case s_chunk_size_start:
       {
         assert(parser->nread == 1);
@@ -2010,9 +2018,11 @@ header_field_begin:
 
         parser->content_length = unhex_val;
         UPDATE_STATE(s_chunk_size);
-        break;
+        NEXTCHAR_COUNTED();
+        /* FALLTHROUGH */
       }
 
+      chunk_size:
       case s_chunk_size:
       {
         uint64_t t;
@@ -2021,7 +2031,8 @@ header_field_begin:
 
         if (ch == CR) {
           UPDATE_STATE(s_chunk_size_almost_done);
-          break;
+          NEXTCHAR_COUNTED();
+          goto chunk_size_almost_done;
         }
 
         unhex_val = unhex[(unsigned char)ch];
@@ -2047,7 +2058,8 @@ header_field_begin:
         }
 
         parser->content_length = t;
-        break;
+        NEXTCHAR_COUNTED();
+        goto chunk_size;
       }
 
       case s_chunk_parameters:
@@ -2061,6 +2073,7 @@ header_field_begin:
         break;
       }
 
+      chunk_size_almost_done:
       case s_chunk_size_almost_done:
       {
         assert(parser->flags & F_CHUNKED);
@@ -2071,13 +2084,17 @@ header_field_begin:
         if (parser->content_length == 0) {
           parser->flags |= F_TRAILING;
           UPDATE_STATE(s_header_field_start);
-        } else {
-          UPDATE_STATE(s_chunk_data);
+          CALLBACK_NOTIFY(chunk_header);
+          break;
         }
+
+        UPDATE_STATE(s_chunk_data);
         CALLBACK_NOTIFY(chunk_header);
-        break;
+        NEXTCHAR();
+        goto chunk_data;
       }
 
+      chunk_data:
       case s_chunk_data:
       {
         uint64_t to_read = MIN(parser->content_length,
@@ -2094,11 +2111,13 @@ header_field_begin:
         parser->content_length -= to_read;
         p += to_read - 1;
 
-        if (parser->content_length == 0) {
-          UPDATE_STATE(s_chunk_data_almost_done);
+        if (parser->content_length != 0) {
+          break;
         }
 
-        break;
+        UPDATE_STATE(s_chunk_data_almost_done);
+        NEXTCHAR();
+        /* FALLTHROUGH */
       }
 
       case s_chunk_data_almost_done:
@@ -2107,7 +2126,8 @@ header_field_begin:
         STRICT_CHECK(ch != CR);
         UPDATE_STATE(s_chunk_data_done);
         CALLBACK_DATA(body);
-        break;
+        NEXTCHAR();
+        /* FALLTHROUGH */
 
       case s_chunk_data_done:
         assert(parser->flags & F_CHUNKED);
@@ -2115,7 +2135,8 @@ header_field_begin:
         parser->nread = 0;
         UPDATE_STATE(s_chunk_size_start);
         CALLBACK_NOTIFY(chunk_complete);
-        break;
+        NEXTCHAR_COUNTED();
+        goto chunk_size_start;
 
       default:
         assert(0 && "unhandled state");
