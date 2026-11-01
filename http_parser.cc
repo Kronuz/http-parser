@@ -334,6 +334,17 @@ static const uint8_t normal_url_char[32] = {
   ch = *++p;                                                  \
   ++parser->nread;
 
+/* Step to the next byte and count it as the top of the loop does, so that the
+ * code can go straight to the state it has just set (goto) instead of through
+ * the loop and the dispatch. With no next byte the switch is left and the loop
+ * ends, as it does after any other state. */
+#define NEXTCHAR_COUNTED() \
+  if unlikely(p+1 == (data+len)) {                            \
+    break;                                                    \
+  }                                                           \
+  ch = *++p;                                                  \
+  COUNT_HEADER_SIZE(1);
+
 
 /**
  * Verify that a char is a valid visible (printable) US-ASCII
@@ -1161,7 +1172,8 @@ reexecute:
               parser->nread += 9;
               p += 9;
               UPDATE_STATE(s_header_field_start);
-              break;
+              NEXTCHAR_COUNTED();
+              goto header_field_start;
             }
             UPDATE_STATE(s_req_http_H);
             break;
@@ -1282,6 +1294,7 @@ reexecute:
         break;
       }
 
+      header_field_start:
       case s_header_field_start:
       {
         if (ch == CR) {
@@ -1466,15 +1479,20 @@ header_field_begin:
         if (ch == ':') {
           UPDATE_STATE(s_header_value_discard_ws);
           CALLBACK_DATA(header_field);
-          break;
+          NEXTCHAR_COUNTED();
+          goto header_value_discard_ws;
         }
 
         SET_ERRNO(HPE_INVALID_HEADER_TOKEN);
         goto error;
       }
 
+      header_value_discard_ws:
       case s_header_value_discard_ws:
-        if (ch == ' ' || ch == '\t') break;
+        if (ch == ' ' || ch == '\t') {
+          NEXTCHAR_COUNTED();
+          goto header_value_discard_ws;
+        }
 
         if (ch == CR) {
           UPDATE_STATE(s_header_value_discard_ws_almost_done);
@@ -1549,7 +1567,8 @@ header_field_begin:
             parser->header_state = h_general;
             break;
         }
-        break;
+        NEXTCHAR_COUNTED();
+        /* FALLTHROUGH */
       }
 
       case s_header_value:
@@ -1735,7 +1754,7 @@ header_field_begin:
           p += 2;
           ch = *p;
           UPDATE_STATE(s_header_value_lws);
-          REEXECUTE();
+          goto header_value_lws;
         }
         break;
       }
@@ -1751,6 +1770,7 @@ header_field_begin:
         break;
       }
 
+      header_value_lws:
       case s_header_value_lws:
       {
         if (ch == ' ' || ch == '\t') {
@@ -1777,7 +1797,7 @@ header_field_begin:
         }
 
         UPDATE_STATE(s_header_field_start);
-        REEXECUTE();
+        goto header_field_start;
       }
 
       case s_header_value_discard_ws_almost_done:
