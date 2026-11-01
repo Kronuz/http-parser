@@ -359,6 +359,15 @@ static const uint8_t normal_url_char[32] = {
 #define IS_HEADER_CHAR(ch)                                                     \
   (ch == CR || ch == LF || ch == 9 || ((unsigned char)ch > 31 && ch != 127))
 
+/* IS_HEADER_CHAR as a table: one load where the parser checks a value's bytes */
+struct HeaderChar {
+  uint8_t ok[256];
+  constexpr HeaderChar() : ok() {
+    for (int c = 0; c < 256; ++c) ok[c] = IS_HEADER_CHAR((char) c);
+  }
+};
+static constexpr HeaderChar header_char{};
+
 #define start_state (parser->type == HTTP_REQUEST ? s_start_req : s_start_res)
 
 /* Unless lenient, the HTTP versions a message may carry (llhttp's: 0.9, 1.0, 1.1, 2.0) */
@@ -422,7 +431,7 @@ do {                                                                 \
     goto error;                                                      \
   }                                                                  \
 } while (0)
-# define NEW_MESSAGE() (http_should_keep_alive(parser) ? start_state : s_dead)
+# define NEW_MESSAGE() (should_keep_alive(parser) ? start_state : s_dead)
 #else
 # define STRICT_CHECK(cond)
 # define NEW_MESSAGE() start_state
@@ -439,7 +448,64 @@ static struct {
 };
 #undef HTTP_STRERROR_GEN
 
-int http_message_needs_eof(const http_parser *parser);
+#if defined(__GNUC__) || defined(__clang__)
+# define HTTP_PARSER_ALWAYS_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+# define HTTP_PARSER_ALWAYS_INLINE __forceinline
+#else
+# define HTTP_PARSER_ALWAYS_INLINE inline
+#endif
+
+/* http_message_needs_eof() and http_should_keep_alive(), also inlined where the
+ * loop starts the next message (NEW_MESSAGE()). */
+
+/* Does the parser need to see an EOF to find the end of the message? */
+static HTTP_PARSER_ALWAYS_INLINE int
+message_needs_eof (const http_parser *parser)
+{
+  if (parser->type == HTTP_REQUEST) {
+    return 0;
+  }
+
+  /* See RFC 2616 section 4.4 */
+  if (parser->status_code / 100 == 1 || /* 1xx e.g. Continue */
+      parser->status_code == 204 ||     /* No Content */
+      parser->status_code == 304 ||     /* Not Modified */
+      parser->flags & F_SKIPBODY) {     /* response to a HEAD request */
+    return 0;
+  }
+
+  if ((parser->flags & F_CHUNKED) || parser->content_length != ULLONG_MAX) {
+    return 0;
+  }
+
+  return 1;
+}
+
+static HTTP_PARSER_ALWAYS_INLINE int
+should_keep_alive (const http_parser *parser)
+{
+  if (parser->http_major > 0 && parser->http_minor > 0) {
+    /* HTTP/1.1 */
+    if (parser->flags & F_CONNECTION_CLOSE) {
+      return 0;
+    }
+  } else {
+    /* HTTP/1.0 or earlier */
+    if (!(parser->flags & F_CONNECTION_KEEP_ALIVE)) {
+      return 0;
+    }
+    /* Unless lenient: Transfer-Encoding before HTTP/1.1 is faulty framing, and the
+     * connection closes after the message (RFC 9112 section 6.1) */
+    if (!parser->lenient_http_headers && (parser->flags & F_CHUNKED) &&
+        parser->http_major < 2) {
+      return 0;
+    }
+  }
+
+  return !message_needs_eof(parser);
+}
+
 
 const char* find_crlf(const char* p, const char* data, size_t len);
 const char* find_value_end(const char* p, const char* data, size_t len);
@@ -763,10 +829,13 @@ parse_url_char(enum state s, const char ch)
   return s_dead;
 }
 
-size_t http_parser_execute (http_parser *parser,
-                            const http_parser_settings *settings,
-                            const char *data,
-                            size_t len)
+/* The parse loop, compiled twice: lenient_http_headers is a constant in each copy,
+ * so the strict one carries no flag, and neither keeps it in a register. */
+template <bool lenient>
+HTTP_PARSER_NOINLINE static size_t execute(http_parser *parser,
+                                           const http_parser_settings *settings,
+                                           const char *data,
+                                           size_t len)
 {
   char c, ch;
   int8_t unhex_val;
@@ -777,7 +846,6 @@ size_t http_parser_execute (http_parser *parser,
   const char *body_mark = 0;
   const char *status_mark = 0;
   enum state p_state = (enum state) parser->state;
-  const unsigned int lenient = parser->lenient_http_headers;
 
   /* We're in an error state. Don't bother doing anything. */
   if (HTTP_PARSER_ERRNO(parser) != HPE_OK) {
@@ -1678,7 +1746,7 @@ header_field_begin:
       case s_header_value_start:
       {
         /* Unless lenient, every byte of a value is checked, the first one too */
-        if (!lenient && !IS_HEADER_CHAR(ch)) {
+        if (!lenient && !header_char.ok[(unsigned char) ch]) {
           SET_ERRNO(HPE_INVALID_HEADER_TOKEN);
           goto error;
         }
@@ -1774,7 +1842,7 @@ header_field_begin:
             REEXECUTE();
           }
 
-          if (!lenient && !IS_HEADER_CHAR(ch)) {
+          if (!lenient && !header_char.ok[(unsigned char) ch]) {
             SET_ERRNO(HPE_INVALID_HEADER_TOKEN);
             goto error;
           }
@@ -2183,7 +2251,7 @@ header_field_begin:
             /* Content-Length header given and non-zero */
             UPDATE_STATE(s_body_identity);
           } else {
-            if (!http_message_needs_eof(parser)) {
+            if (!message_needs_eof(parser)) {
               /* Assume content-length 0 - read the next */
               UPDATE_STATE(NEW_MESSAGE());
               CALLBACK_NOTIFY(message_complete);
@@ -2445,53 +2513,27 @@ error:
   RETURN(p - data);
 }
 
+size_t http_parser_execute (http_parser *parser,
+                            const http_parser_settings *settings,
+                            const char *data,
+                            size_t len)
+{
+  return parser->lenient_http_headers ? execute<true>(parser, settings, data, len)
+                                      : execute<false>(parser, settings, data, len);
+}
 
-/* Does the parser need to see an EOF to find the end of the message? */
+
 int
 http_message_needs_eof (const http_parser *parser)
 {
-  if (parser->type == HTTP_REQUEST) {
-    return 0;
-  }
-
-  /* See RFC 2616 section 4.4 */
-  if (parser->status_code / 100 == 1 || /* 1xx e.g. Continue */
-      parser->status_code == 204 ||     /* No Content */
-      parser->status_code == 304 ||     /* Not Modified */
-      parser->flags & F_SKIPBODY) {     /* response to a HEAD request */
-    return 0;
-  }
-
-  if ((parser->flags & F_CHUNKED) || parser->content_length != ULLONG_MAX) {
-    return 0;
-  }
-
-  return 1;
+  return message_needs_eof(parser);
 }
 
 
 int
 http_should_keep_alive (const http_parser *parser)
 {
-  if (parser->http_major > 0 && parser->http_minor > 0) {
-    /* HTTP/1.1 */
-    if (parser->flags & F_CONNECTION_CLOSE) {
-      return 0;
-    }
-  } else {
-    /* HTTP/1.0 or earlier */
-    if (!(parser->flags & F_CONNECTION_KEEP_ALIVE)) {
-      return 0;
-    }
-    /* Unless lenient: Transfer-Encoding before HTTP/1.1 is faulty framing, and the
-     * connection closes after the message (RFC 9112 section 6.1) */
-    if (!parser->lenient_http_headers && (parser->flags & F_CHUNKED) &&
-        parser->http_major < 2) {
-      return 0;
-    }
-  }
-
-  return !http_message_needs_eof(parser);
+  return should_keep_alive(parser);
 }
 
 
