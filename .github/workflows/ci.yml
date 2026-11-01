@@ -12,3 +12,19 @@ concurrency:
 jobs:
   ci:
     uses: Kronuz/cpp-libraries/.github/workflows/cmake.yml@main
+  # The byte loops instead of NEON and SSE2, and the non-strict parser (the URL table
+  # with high bytes): the same tests, no sanitizers.
+  scalar:
+    uses: Kronuz/cpp-libraries/.github/workflows/cmake.yml@main
+    with:
+      cmake_args: -DCMAKE_CXX_FLAGS=-DHTTP_PARSER_NO_SIMD
+      sanitize: false
+      tsan: false
+      freebsd: false
+  lenient:
+    uses: Kronuz/cpp-libraries/.github/workflows/cmake.yml@main
+    with:
+      cmake_args: -DCMAKE_CXX_FLAGS=-DHTTP_PARSER_STRICT=0
+      sanitize: false
+      tsan: false
+      freebsd: false

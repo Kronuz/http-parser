@@ -1,0 +1,38 @@
+name: fuzz
+# Nightly: the differential fuzz target (test/fuzz.cc) under ASan and UBSan, on x86-64 and arm64
+# Linux, in both parse modes, as a mutation loop and as ten minutes of libFuzzer from the seed
+# corpus. A difference from the frozen parser, an over-read or a UB report fails the job.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '47 7 * * *'
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.os }} strict=${{ matrix.strict }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        strict: [1, 0]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build
+        run: |
+          CXX=clang++ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g" \
+            "-DCMAKE_CXX_FLAGS=-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -DHTTP_PARSER_STRICT=${{ matrix.strict }}" \
+            -DHTTP_PARSER_BUILD_LIBFUZZER=ON
+          cmake --build build
+      - name: Mutation loop
+        run: build/http_parser_fuzz --iters 100000 --seed ${{ github.run_number }} --splits 128
+      - name: libFuzzer
+        run: |
+          mkdir -p corpus artifacts
+          build/http_parser_fuzz --dump-corpus corpus
+          build/http_parser_libfuzzer corpus -max_total_time=600 -max_len=2048 -timeout=60 -rss_limit_mb=4000 -artifact_prefix=artifacts/
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: artifacts-${{ matrix.os }}-${{ matrix.strict }}
+          path: artifacts/
