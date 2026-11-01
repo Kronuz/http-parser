@@ -1008,7 +1008,8 @@ reexecute:
       case s_res_first_status_code:
       {
         if (!IS_NUM(ch)) {
-          if (ch == ' ') {
+          /* Unless lenient: one space before the status (RFC 9112 section 4) */
+          if (ch == ' ' && lenient) {
             break;
           }
 
@@ -1023,6 +1024,11 @@ reexecute:
       case s_res_status_code:
       {
         if (!IS_NUM(ch)) {
+          /* Unless lenient: three digits (RFC 9112 section 4) */
+          if (!lenient && parser->status_code < 100) {
+            SET_ERRNO(HPE_INVALID_STATUS);
+            goto error;
+          }
           switch (ch) {
             case ' ':
               UPDATE_STATE(s_res_status_start);
@@ -1995,7 +2001,9 @@ header_field_begin:
             /* Unless lenient, a request's Transfer-Encoding is "chunked" and
              * nothing else: this parser decodes no other coding, and the body's
              * length would be unknown (RFC 9112 section 6.3). */
-            if (!lenient && parser->type == HTTP_REQUEST) {
+            if (!lenient && (parser->type == HTTP_REQUEST || (parser->flags & F_CHUNKED))) {
+              /* nor, in a response, is there a coding after chunked: chunked
+               * is the last one (RFC 9112 section 6.1) */
               SET_ERRNO(HPE_INVALID_TRANSFER_ENCODING);
               goto error;
             }
@@ -2038,8 +2046,8 @@ header_field_begin:
               }
               break;
             case h_transfer_encoding:
-              /* Unless lenient, so is a request's empty Transfer-Encoding */
-              if (!lenient && parser->type == HTTP_REQUEST) {
+              /* Unless lenient, so is an empty Transfer-Encoding */
+              if (!lenient) {
                 SET_ERRNO(HPE_INVALID_TRANSFER_ENCODING);
                 goto error;
               }
@@ -2095,6 +2103,12 @@ header_field_begin:
           ((parser->flags & (F_UPGRADE | F_CONNECTION_UPGRADE)) ==
            (F_UPGRADE | F_CONNECTION_UPGRADE) ||
            parser->method == HTTP_CONNECT);
+        /* Unless lenient: a response switches protocols only with a 101; in
+         * any other, Upgrade announces what the server supports (RFC 9110
+         * section 7.8) */
+        if (!lenient && parser->type == HTTP_RESPONSE && parser->status_code != 101) {
+          parser->upgrade = 0;
+        }
 
         /* Here we call the headers_complete callback. This is somewhat
          * different than other callbacks because if the user returns 1, we
@@ -2133,22 +2147,28 @@ header_field_begin:
       headers_done:
       case s_headers_done:
       {
-        int hasBody;
+        int hasBody, skipBody;
         STRICT_CHECK(ch != LF);
 
         parser->nread = 0;
 
+        /* Unless lenient: a 1xx, 204 or 304 response ends with its header
+         * section, whatever framing it names (RFC 9112 section 6.3) */
+        skipBody = (parser->flags & F_SKIPBODY) ||
+          (!lenient && parser->type == HTTP_RESPONSE &&
+           (parser->status_code / 100 == 1 || parser->status_code == 204 ||
+            parser->status_code == 304));
         hasBody = parser->flags & F_CHUNKED ||
           (parser->content_length > 0 && parser->content_length != ULLONG_MAX);
         if (parser->upgrade && (parser->method == HTTP_CONNECT ||
-                                (parser->flags & F_SKIPBODY) || !hasBody)) {
+                                skipBody || !hasBody)) {
           /* Exit, the rest of the message is in a different protocol. */
           UPDATE_STATE(NEW_MESSAGE());
           CALLBACK_NOTIFY(message_complete);
           RETURN((p - data) + 1);
         }
 
-        if (parser->flags & F_SKIPBODY) {
+        if (skipBody) {
           UPDATE_STATE(NEW_MESSAGE());
           CALLBACK_NOTIFY(message_complete);
         } else if (parser->flags & F_CHUNKED) {

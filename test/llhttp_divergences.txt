@@ -14,8 +14,7 @@
 #   S-chunk        request smuggling: chunk size followed by a space, malformed chunk
 #                  extensions, LF inside an extension
 #   S-version      strictness: HTTP versions other than d.d, or not 0.9/1.0/1.1/2.0
-#   R-framing      response framing (clients only): Upgrade outside 101, a body on 304
-#   R-line         response status line strictness (extra space, one-digit status)
+#                  (the S categories name what the hardening closed; none is left)
 #   R-callbacks    response callbacks: on_message_begin per leading CRLF, no on_status for an
 #                  empty reason
 #   B-method       benign: a method or protocol outside this parser's table (REPORT, M-SEARCH,
@@ -26,9 +25,10 @@
 #   B-stricter     benign: this parser rejects what llhttp accepts
 #   B-close-ows    `Connection: close` followed by a tab is not recognized as close
 #   B-split        benign: a slice is delivered before an error when the input is split there
-# Since the hardening (CHANGELOG.md, 2026-11-01) no request case is in an S category; the
-# requests it now rejects where llhttp also does, with other callbacks before the error,
-# are B-error, and the two it rejects where llhttp does not (`deflate, chunked`) B-stricter.
+# With the hardening (CHANGELOG.md, 2026-11-01) no case is in an S category, requests and
+# responses: what it rejects where llhttp also does, with other callbacks before the error,
+# is B-error, and what it rejects where llhttp does not B-stricter. The response cases left
+# are callbacks only (R-callbacks).
 request/connection.md:107	B-lenient	lenient-keep-alive: data after a 1.0 message rejected
 request/connection.md:342	B-close-ows	`close\t` not taken as close; the next request is parsed
 request/connection.md:392	B-lenient	lenient-keep-alive: data after close rejected
@@ -80,19 +80,11 @@ request/transfer-encoding.md:1166	B-lenient	lenient-optional-crlf-after-chunk: r
 request/transfer-encoding.md:1241	B-lenient	lenient-spaces-after-chunk-size: rejected
 response/connection.md:191	B-lenient	lenient-data-after-close: rejected
 response/connection.md:260	B-lenient	lenient-keep-alive: rejected
-response/connection.md:293	R-framing	101 with Content-Length: the body is read as HTTP
-response/connection.md:331	R-framing	101 with Transfer-Encoding: the body is read as HTTP
-response/connection.md:374	R-framing	200 with Upgrade taken as an upgrade
-response/connection.md:405	R-framing	200 with Upgrade and Content-Length taken as an upgrade
-response/connection.md:442	R-framing	200 with Upgrade and Transfer-Encoding taken as an upgrade
-response/connection.md:492	R-framing	304 with Content-Length: a body is read
-response/connection.md:537	R-framing	304 with Transfer-Encoding: a body is read
+response/connection.md:492	R-callbacks	304 with Content-Length, then a CRLF: on_message_begin for the leading CRLF
 response/connection.md:586	R-callbacks	on_message_begin for each leading CRLF
 response/content-length.md:168	B-stricter	tabs around the Content-Length value rejected
 response/invalid.md:90	B-error	tab after the version rejected; on_message_begin for the leading CR first
 response/invalid.md:151	B-lenient	lenient-optional-lf-after-cr: rejected
-response/invalid.md:231	R-line	extra space between version and status accepted
-response/invalid.md:269	R-line	one-digit status accepted
 response/invalid.md:287	B-error	both reject (fix/smuggling); the callbacks before the error differ: status line and headers ended by bare LF accepted
 response/invalid.md:327	B-error	both reject (fix/smuggling); the callbacks before the error differ: status line and headers ended by bare LF accepted
 response/lenient-version.md:4	B-lenient	lenient-version: HTTP/5.6 rejected
@@ -103,8 +95,7 @@ response/sample.md:310	R-callbacks	no on_status for an empty reason phrase
 response/sample.md:330	B-error	both reject (fix/smuggling); the callbacks before the error differ: status line ended by bare LF accepted
 response/sample.md:351	B-lenient	lenient-optional-cr-before-lf: status line ended by bare LF rejected
 response/sample.md:695	R-callbacks	on_message_begin for each leading CRLF
-response/transfer-encoding.md:4	S-te	empty Transfer-Encoding with Content-Length accepted
-response/transfer-encoding.md:98	S-te	`chunked` not last: read as chunked
+response/transfer-encoding.md:98	B-stricter	`chunked` then `identity` rejected: no coding after chunked (llhttp reads until EOF)
 split:request/connection.md:611	B-split	header slice delivered before the error
 split:request/connection.md:637	B-split	header slice delivered before the error
 split:request/content-length.md:75	B-split	header slice delivered before the error

@@ -204,17 +204,38 @@ long checks = 0, failures = 0;
 // the old parser went on.
 bool hardening_errno(unsigned e) {
 	return e == HPE_CR_EXPECTED || e == HPE_INVALID_HEADER_TOKEN || e == HPE_INVALID_TRANSFER_ENCODING ||
-		e == HPE_INVALID_CONTENT_LENGTH || e == HPE_INVALID_CHUNK_SIZE || e == HPE_INVALID_VERSION;
+		e == HPE_INVALID_CONTENT_LENGTH || e == HPE_INVALID_CHUNK_SIZE || e == HPE_INVALID_VERSION || e == HPE_INVALID_STATUS;
 }
 
 // With lenient_http_headers unset, the inputs whose result changes on purpose beyond an early
 // hardening error: given the first event at which the parsers differ, the rule that changes it
 // (CHANGELOG.md, "Hardening"), or nullptr. Each rule's own cases, against its oracle, are in
 // the hardening sweep (section 6); here only old != new is allowed, and only for these.
-std::vector<std::pair<const char*, long>> changed = { { "http10-te-close", 0 } };
+std::vector<std::pair<const char*, long>> changed = { { "http10-te-close", 0 }, { "response-upgrade-101", 0 }, { "response-no-body", 0 } };
 
 const char* changed_class(const std::vector<Event>& a, const std::vector<Event>& b, size_t i) {
-	(void) a;
+	const Snap* sa = i < a.size() ? &a[i].snap : nullptr;
+	const Snap* sb = i < b.size() ? &b[i].snap : nullptr;
+	if (sa && sa->type == HTTP_RESPONSE) {
+		// RFC 9110 section 7.8: only a 101 switches protocols; the old parser took any
+		// response with Upgrade and Connection: upgrade as an upgrade.
+		if (sb && sa->status_code == sb->status_code && sa->upgrade && !sb->upgrade && sa->status_code != 101)
+			return "response-upgrade-101";
+		// RFC 9112 section 6.3: a 1xx, 204 or 304 response has no body; the old parser read
+		// the one its Content-Length or Transfer-Encoding named. Either the old parser is in
+		// that body, or the new one still holds the framing it did not read, or the bytes the
+		// old parser took as that body are not a message and the new parser stops on them.
+		auto no_body = [](unsigned st) { return st / 100 == 1 || st == 204 || st == 304; };
+		const unsigned st = sa->status_code;
+		const bool in_body = (sa->state >= s_chunk_size_start && sa->state <= s_chunk_size_almost_done) ||
+			sa->state > s_headers_done || (sa->flags & (F_CHUNKED | F_TRAILING));
+		const bool unread = sb && sb->type == HTTP_RESPONSE && sb->status_code == st &&
+			((sb->flags & F_CHUNKED) || (sb->content_length > 0 && sb->content_length != ULLONG_MAX));
+		if (no_body(st) && (in_body || unread)) return "response-no-body";
+		if (sb && sb->type == HTTP_RESPONSE && no_body(sb->status_code) && i + 1 == b.size() && b[i].kind == RET &&
+				sb->http_errno != HPE_OK && sb->http_errno != HPE_PAUSED)
+			return "response-no-body";
+	}
 	if (i < b.size() && i + 1 == b.size() && b[i].kind == RET) {
 		const Snap& s = b[i].snap;
 		// RFC 9112 section 6.1: after an HTTP/1.0 message with Transfer-Encoding the connection
@@ -421,6 +442,11 @@ std::vector<Seed> corpus() {
 	res("res-headers", "HTTP/1.1 200 OK\r\nDate: Mon, 27 Jul 2009 12:28:53 GMT\r\nServer: Apache\r\nLast-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n"
 		"ETag: \"34aa387-d-1568eb00\"\r\nAccept-Ranges: bytes\r\nContent-Length: 51\r\nVary: Accept-Encoding\r\nContent-Type: text/plain\r\n\r\n"
 		"Hello World! My payload includes a trailing CRLF.\r\n");
+	// Framing a 1xx, 204 or 304 response does not have, and Upgrade outside a 101.
+	res("res-101-cl", "HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: h2c\r\nContent-Length: 4\r\n\r\nbodyproto");
+	res("res-304-te", "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+	res("res-304-te-next", "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+	res("res-200-upgrade", "HTTP/1.1 200 OK\r\nConnection: upgrade\r\nUpgrade: h2c\r\nContent-Length: 4\r\n\r\nbody");
 	// Transfer-Encoding before HTTP/1.1, then another message on the same connection.
 	req("http10-te", "POST / HTTP/1.0\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
 		"GET /admin HTTP/1.1\r\nHost: a\r\n\r\n");
@@ -542,10 +568,12 @@ const enum http_parser_type types[] = { HTTP_REQUEST, HTTP_RESPONSE, HTTP_BOTH }
 // The parser alone, not lenient: `in` must stop with `want` (HPE_OK: parse whole, with a
 // message completed; HPE_CLOSED_CONNECTION: a message completed, and the bytes after it are
 // refused), in one call, byte by byte, and (all_cuts) cut in two everywhere; and,
-// given `at`, the one call must stop at that offset (the byte that breaks the rule).
+// given `at`, the one call must stop at that offset (the byte that breaks the rule); given
+// `messages`, that many must complete, and given `upgrade`, the parser must end with it.
 const enum http_parser_type t_req = HTTP_REQUEST, t_res = HTTP_RESPONSE;
 
-void harden(enum http_parser_type t, const std::string& in, enum http_errno want, bool all_cuts = true, long at = -1) {
+void harden(enum http_parser_type t, const std::string& in, enum http_errno want, bool all_cuts = true, long at = -1,
+	int messages = -1, int upgrade = -1) {
 	std::vector<std::vector<size_t>> plans = { {}, { 1 } };
 	for (size_t cut = 1; all_cuts && cut < in.size(); ++cut) plans.push_back({ cut, in.size() });
 	if (!all_cuts) plans.push_back({ 16 });
@@ -560,12 +588,14 @@ void harden(enum http_parser_type t, const std::string& in, enum http_errno want
 		long stop = !ev.empty() && ev.back().kind == RET ? ev.back().off : -1;
 		bool where = at < 0 || !plan.empty() || stop == at;
 		bool must_complete = want == HPE_OK || want == HPE_CLOSED_CONNECTION;
-		if (got == (unsigned) want && (!must_complete || completed) && where) continue;
+		long done = std::count_if(ev.begin(), ev.end(), [](const Event& e) { return e.kind == MSG_DONE; });
+		bool counted = (messages < 0 || done == messages) && (upgrade < 0 || (!ev.empty() && (int) ev.back().snap.upgrade == upgrade));
+		if (got == (unsigned) want && (!must_complete || completed) && where && counted) continue;
 		++failures;
 		if (failures <= 10) {
-			printf("HARDENING %s type=%d plan=%s: want %s at %ld, got %s at %ld%s\n", show(in).c_str(), (int) t,
-				plan.empty() ? "oneshot" : std::to_string(plan[0]).c_str(), http_errno_name(want), at,
-				http_errno_name((enum http_errno) got), stop, completed ? "" : " (no message completed)");
+			printf("HARDENING %s type=%d plan=%s: want %s at %ld (%d messages, upgrade %d), got %s at %ld (%ld messages, upgrade %d)\n",
+				show(in).c_str(), (int) t, plan.empty() ? "oneshot" : std::to_string(plan[0]).c_str(), http_errno_name(want), at,
+				messages, upgrade, http_errno_name((enum http_errno) got), stop, done, ev.empty() ? -1 : (int) ev.back().snap.upgrade);
 		}
 		if (getenv("HTTP_PARSER_DIFF_STOP")) {
 			fflush(stdout);
@@ -864,6 +894,34 @@ int main(int argc, char** argv) {
 				HPE_INVALID_CONTENT_LENGTH, true, 72);
 		}
 		harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nContent-Lengthx: 5\r\nExpires: 0\r\n\r\n", HPE_OK);
+		// The status line: one space, three digits.
+		for (const char* line : { "HTTP/1.1  200 OK", "HTTP/1.1 2 OK", "HTTP/1.1 20 OK", "HTTP/1.1 099 OK", "HTTP/1.1 20\r", "HTTP/1.1 \t200 OK" })
+			harden(t_res, std::string(line) + "\r\nContent-Length: 0\r\n\r\n", HPE_INVALID_STATUS);
+		for (const char* line : { "HTTP/1.1 200 OK", "HTTP/1.1 200", "HTTP/1.1 100 Continue", "HTTP/1.1 999 X" })
+			harden(t_res, std::string(line) + "\r\nContent-Length: 0\r\n\r\n", HPE_OK);
+		// A response's Transfer-Encoding: not empty, and no coding after chunked.
+		harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding:\r\nContent-Length: 5\r\n\r\nhello", HPE_INVALID_TRANSFER_ENCODING);
+		harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: \r\n\r\nhello", HPE_INVALID_TRANSFER_ENCODING);
+		for (const char* te : { "identity", "gzip", "chunked, gzip", "chunk" })
+			harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: " + std::string(te) + "\r\n\r\n0\r\n\r\n",
+				HPE_INVALID_TRANSFER_ENCODING);
+		harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", HPE_OK);
+		harden(t_res, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\nuntil EOF", HPE_OK);
+		// A 1xx, 204 or 304 response has no body, whatever framing it names; the next response
+		// starts right after its header section. Only a 101 is an upgrade.
+		for (const char* status : { "100 Continue", "103 Early Hints", "204 No Content", "304 Not Modified" })
+			for (const char* framing : { "Content-Length: 10", "Transfer-Encoding: chunked", "Content-Length: 0", "X: y" }) {
+				const std::string head = "HTTP/1.1 " + std::string(status) + "\r\n" + framing + "\r\n\r\n";
+				harden(t_res, head + "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", HPE_OK, true, -1, 2);
+			}
+		for (const char* framing : { "Content-Length: 4", "Transfer-Encoding: chunked", "X: y" }) {
+			const std::string head = "HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: h2c\r\n" + std::string(framing) + "\r\n\r\n";
+			harden(t_res, head + "bodyproto", HPE_OK, true, (long) head.size(), 1, 1);
+		}
+		for (const char* framing : { "Content-Length: 4\r\n", "Transfer-Encoding: chunked\r\n", "" }) {
+			const std::string body = framing[0] == 'T' ? "4\r\nbody\r\n0\r\n\r\n" : "body";
+			harden(t_res, "HTTP/1.1 200 OK\r\nConnection: upgrade\r\nUpgrade: h2c\r\n" + std::string(framing) + "\r\n" + body, HPE_OK, true, -1, 1, 0);
+		}
 		// A request line has a version: HTTP/0.9 requests have none, nor headers, so a header
 		// section after such a line is not HTTP/0.9's (and HTTP/0.x is an error at the 0).
 		harden(t_req, "GET /\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nhello", HPE_INVALID_VERSION, true, 5);
