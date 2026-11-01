@@ -1,24 +1,35 @@
 # http-parser: bytes in any framing, callbacks with slices of your own buffer.
 # Render: d2 --layout elk --sketch --theme 302 docs/http-parser.d2 docs/http-parser.svg
-direction: right
+vars: { d2-config: { layout-engine: elk; theme-id: 302; sketch: true; pad: 24 } }
+grid-rows: 2
+grid-columns: 3
+horizontal-gap: 90
+vertical-gap: 140
 
 wire: bytes {
+  width: 240
+  height: 170
   style.multiple: true
   label: "bytes, in any chunks\nhttp_parser_execute()"
 }
-
-parser: http_parser {
-  label: "state machine\nkeeps state across calls"
+parser: state machine {
+  width: 240
+  height: 170
+  label: "http_parser\nstate kept across calls"
 }
-
 callbacks: your callbacks {
-  label: "on_url · on_header_field · on_header_value\non_headers_complete · on_body · on_message_complete"
+  width: 240
+  height: 170
+  label: "your callbacks, given\nslices of your buffer\non_url · on_header_field\non_header_value · on_body\non_message_complete"
 }
-
+gap1: "" { style.opacity: 0 }
 fields: parser fields {
-  label: "method · status_code · http_major/minor\ncontent_length · upgrade · http_errno"
+  width: 240
+  height: 170
+  label: "parser fields\nmethod · status_code\ncontent_length · http_errno"
 }
+gap2: "" { style.opacity: 0 }
 
 wire -> parser
-parser -> callbacks: "slices of your buffer"
+parser -> callbacks
 parser -> fields
