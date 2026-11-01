@@ -57,6 +57,25 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(http_parser_diff PRIVATE http_parser)
   add_test(NAME http_parser_diff COMMAND http_parser_diff)
 
+  # Differential fuzz target (test/fuzz.cc): the parser against the frozen copy on bytes
+  # a fuzzer or a mutation loop chooses, with every split point, pause and failure.
+  # http_parser_fuzz is the mutation-loop driver; a short run is a CTest test.
+  add_executable(http_parser_fuzz test/fuzz.cc test/http_parser_old.cc)
+  target_include_directories(http_parser_fuzz PRIVATE test)
+  target_compile_definitions(http_parser_fuzz PRIVATE HTTP_PARSER_FUZZ_DRIVER)
+  target_link_libraries(http_parser_fuzz PRIVATE http_parser)
+  add_test(NAME http_parser_fuzz COMMAND http_parser_fuzz --iters 1500 --splits 96)
+
+  # The same target as a libFuzzer binary. Configure with clang and
+  # -DCMAKE_CXX_FLAGS="-fsanitize=fuzzer-no-link,address,undefined" so the parser is instrumented.
+  option(HTTP_PARSER_BUILD_LIBFUZZER "Build the libFuzzer target (clang)" OFF)
+  if(HTTP_PARSER_BUILD_LIBFUZZER)
+    add_executable(http_parser_libfuzzer test/fuzz.cc test/http_parser_old.cc)
+    target_include_directories(http_parser_libfuzzer PRIVATE test)
+    target_link_libraries(http_parser_libfuzzer PRIVATE http_parser)
+    target_link_options(http_parser_libfuzzer PRIVATE -fsanitize=fuzzer)
+  endif()
+
   # A/B benchmark against the frozen copy (and llhttp when installed). Run it under
   # a quiet machine; see the header of bench/bench.cc.
   option(HTTP_PARSER_BUILD_BENCH "Build the A/B benchmark" OFF)
@@ -72,6 +91,17 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
       set_source_files_properties(bench/bench_llhttp.cc PROPERTIES INCLUDE_DIRECTORIES "${LLHTTP_INCLUDE_DIR}")
       target_compile_definitions(http_parser_bench PRIVATE HAVE_LLHTTP)
       target_link_libraries(http_parser_bench PRIVATE ${LLHTTP_LIBRARY})
+    endif()
+
+    # One workload through one parser N times: instructions per message under callgrind, or a
+    # steady loop for a sampling profiler.
+    add_executable(http_parser_loop bench/loop.cc test/http_parser_old.cc)
+    target_include_directories(http_parser_loop PRIVATE test bench)
+    target_link_libraries(http_parser_loop PRIVATE http_parser)
+    if(LLHTTP_INCLUDE_DIR AND LLHTTP_LIBRARY)
+      target_sources(http_parser_loop PRIVATE bench/bench_llhttp.cc)
+      target_compile_definitions(http_parser_loop PRIVATE HAVE_LLHTTP)
+      target_link_libraries(http_parser_loop PRIVATE ${LLHTTP_LIBRARY})
     endif()
   endif()
 endif()
