@@ -97,6 +97,10 @@ MUTANTS = [
     ("value-end-sse2-takes-del", "sse2", "_mm_andnot_si128(_mm_cmpeq_epi8(v, ht), ctl), _mm_cmpeq_epi8(v, del)));", "_mm_andnot_si128(_mm_cmpeq_epi8(v, ht), ctl), _mm_setzero_si128()));"),
     ("value-end-neon-overread", "neon+san", "  while (end - p >= 16) {\n    const uint8x16_t v = vld1q_u8((const uint8_t*) p);\n    const uint8x16_t m = vorrq_u8(vbicq_u8", "  while (end - p > 0) {\n    const uint8x16_t v = vld1q_u8((const uint8_t*) p);\n    const uint8x16_t m = vorrq_u8(vbicq_u8"),
     ("value-end-sse2-overread", "sse2+san", "  while (end - p >= 16) {\n    const __m128i v = _mm_loadu_si128((const __m128i*) p);\n    /* v <= 0x1f", "  while (end - p > 0) {\n    const __m128i v = _mm_loadu_si128((const __m128i*) p);\n    /* v <= 0x1f"),
+    # the special header names, matched one byte at a time through name_matchers
+    ("name-fork-t", "all", "hs == (unsigned) h_CON && c == 't' ? h_matching_content_length : h_general", "h_general"),
+    ("name-last-late", "all", "                if (parser->index == m.last) {", "                if (parser->index == m.last + 1u) {"),
+    ("name-index-stays", "all", "              parser->index++;\n              if (c == m.name[parser->index]) {", "              if (c == m.name[parser->index]) {"),
     # each hardening check (unless lenient), taken out: test/diff.cc's hardening sweep must fail
     ("harden-value-first-byte", "all", "        if (!lenient && !header_char.ok[(unsigned char) ch]) {\n          SET_ERRNO(HPE_INVALID_HEADER_TOKEN);\n          goto error;\n        }\n\n        MARK(header_value);", "        MARK(header_value);"),
     ("harden-lf-in-value", "all", "            if (!lenient) {\n              parser->header_state = h_state;\n              SET_ERRNO(HPE_CR_EXPECTED);", "            if (false) {\n              parser->header_state = h_state;\n              SET_ERRNO(HPE_CR_EXPECTED);"),

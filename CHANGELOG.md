@@ -70,6 +70,39 @@ callback, its bytes and offset, every return of `http_parser_execute()` and ever
 
 ### Changed
 
+- **The special header names are matched through a table, not a switch.** On an M4 Pro,
+  POST 1 KB and the 200 response were 1.05-1.08x of 476ba60 since the parse loop became a
+  template. A CPU Profiler trace by state put the loss, and more, in s_header_field's matching
+  of Content-Type and Content-Length (1.71e9 cycles in 476ba60, 2.79e9 in the strict loop, +15%
+  of the row; every other state equal or faster): its `switch (parser->header_state)` has 13
+  case values, a jump table, in 476ba60, and LLVM threads one out of the template's copy, below
+  AArch64's minimum of 13 for a jump table, so it became a four-deep chain of compares per byte
+  (the same binary built with `-mllvm -aarch64-min-jump-table-entries=4` is fixed too). One
+  table step (`name_matchers`: the name, the index of its last byte, the state after it)
+  replaces the switch, with the same states and index after every byte. Against 476ba60, one
+  binary, three interleaved rounds of 15 trials (`quiet strict`):
+
+  | Workload | M4 Pro, before | M4 Pro, after | i9-9980HK, before | i9-9980HK, after |
+  |---|---|---|---|---|
+  | GET, 3 headers | 0.88-0.89x | 0.87-0.88x | 0.90-0.94x | 0.90-0.92x |
+  | GET, 14 headers | 0.99-1.00x | 0.93-0.94x | 0.92-0.93x | 0.94-0.95x |
+  | GET, 64 custom headers | 1.02-1.04x | 1.01-1.02x | 0.85-0.86x | 0.92-0.93x |
+  | POST, 1 KB body | 1.06-1.08x | 0.96-0.98x | 0.94x | 0.88-0.91x |
+  | POST, 64 KB body | 0.99-1.02x | 0.89-0.91x | 0.92x | 0.86-0.88x |
+  | Chunked, 16 x 256 B | 0.78x | 0.73-0.74x | 1.03-1.04x | 0.96x |
+  | 32 pipelined GETs | 0.87-0.88x | 0.85-0.87x | 0.88-0.90x | 0.83-0.86x |
+  | GET, 64-byte segments | 1.00-1.02x | 0.96-0.98x | 1.00-1.01x | 1.03-1.05x |
+  | Response, 8 headers | 1.04-1.06x | 0.94x | 0.87-0.89x | 0.88-0.89x |
+  | Request line only | 0.79-0.80x | 0.78-0.79x | 0.97-1.00x | 0.92-0.94x |
+  | 1 short header | 0.89-0.90x | 0.88-0.90x | 1.03-1.04x | 0.96-0.97x |
+  | 1 long header | 0.86-0.87x | 0.85-0.86x | 0.96-0.98x | 0.95-0.97x |
+  | 125-byte URL | 0.80-0.82x | 0.80-0.81x | 0.89-0.91x | 0.88-0.90x |
+
+  "Before" is main with the response Transfer-Encoding rule below. The A/A arm (a second copy
+  of 476ba60) read 0.98-1.03 on the M4 and 0.96-1.03 on the i9. On the i9 the 64-byte-segment
+  row is 1.03-1.05x (1.03x of the A/A copy), 2-4% slower than before; the chunked and 1-short-
+  header rows, which the response rule had put at 1.03-1.04x there, are back under 1.
+
 - **enum-reflection is pinned at 610203f** (from 7d394c5), and through it constexpr-phf
   183081e, hashes ffa2f5c, static-string cfa8127 and char-classify 65c1ff5. The old pin
   brought hashes 7ab0c23 and char-classify eb1efcb, and FetchContent keeps the first

@@ -186,6 +186,31 @@ do {                                                                 \
 #define CONTENT_LENGTH "content-length"
 #define TRANSFER_ENCODING "transfer-encoding"
 #define UPGRADE "upgrade"
+
+/* The special header names, by header state from h_C to h_matching_upgrade: the
+ * name the byte at parser->index must match, the index of its last byte, and the
+ * state after it. h_C and h_CO match "co" and "con" on the way to h_CON, which
+ * goes on with "conn" (h_CON's 't', content-length, is the one fork). */
+struct name_matcher {
+  const char *name;
+  unsigned char last;
+  unsigned char matched;
+};
+static const struct name_matcher name_matchers[] = {
+  { "co", 1, h_CO },                                                /* h_C */
+  { "con", 2, h_CON },                                              /* h_CO */
+  { "conn", 3, h_matching_connection },                             /* h_CON */
+  { CONNECTION, sizeof(CONNECTION) - 2, h_connection },             /* h_matching_connection */
+  { PROXY_CONNECTION, sizeof(PROXY_CONNECTION) - 2, h_connection }, /* h_matching_proxy_connection */
+  { CONTENT_LENGTH, sizeof(CONTENT_LENGTH) - 2, h_content_length }, /* h_matching_content_length */
+  { TRANSFER_ENCODING, sizeof(TRANSFER_ENCODING) - 2, h_transfer_encoding }, /* h_matching_transfer_encoding */
+  { UPGRADE, sizeof(UPGRADE) - 2, h_upgrade },                      /* h_matching_upgrade */
+};
+static_assert(h_CO == h_C + 1 && h_CON == h_C + 2 && h_matching_connection == h_C + 3 &&
+              h_matching_proxy_connection == h_C + 4 && h_matching_content_length == h_C + 5 &&
+              h_matching_transfer_encoding == h_C + 6 && h_matching_upgrade == h_C + 7 &&
+              h_connection == h_matching_upgrade + 1 && h_upgrade == h_connection + 3,
+              "name_matchers follows the header states");
 #define CHUNKED "chunked"
 #define KEEP_ALIVE "keep-alive"
 #define CLOSE "close"
@@ -1604,107 +1629,28 @@ header_field_begin:
             if (!c)
               break;
 
-            switch (parser->header_state) {
-              case h_general:
-                --p;
-                goto header_field_begin;
-                break;
-
-              case h_C:
-                parser->index++;
-                parser->header_state = (c == 'o' ? h_CO : h_general);
-                break;
-
-              case h_CO:
-                parser->index++;
-                parser->header_state = (c == 'n' ? h_CON : h_general);
-                break;
-
-              case h_CON:
-                parser->index++;
-                switch (c) {
-                  case 'n':
-                    parser->header_state = h_matching_connection;
-                    break;
-                  case 't':
-                    parser->header_state = h_matching_content_length;
-                    break;
-                  default:
-                    parser->header_state = h_general;
-                    break;
+            /* One step of matching a special header name: h_C to h_matching_upgrade
+             * compare the byte with the name at parser->index (a table, not a switch:
+             * twelve cases make a chain of compares on AArch64, where a jump table needs
+             * thirteen), h_connection to h_upgrade take only spaces after the name. */
+            const unsigned hs = parser->header_state;
+            if (likely(hs - (unsigned) h_C <= (unsigned) (h_matching_upgrade - h_C))) {
+              const struct name_matcher &m = name_matchers[hs - h_C];
+              parser->index++;
+              if (c == m.name[parser->index]) {
+                if (parser->index == m.last) {
+                  parser->header_state = m.matched;
                 }
-                break;
-
-              /* connection */
-
-              case h_matching_connection:
-                parser->index++;
-                if (parser->index > sizeof(CONNECTION)-1
-                    || c != CONNECTION[parser->index]) {
-                  parser->header_state = h_general;
-                } else if (parser->index == sizeof(CONNECTION)-2) {
-                  parser->header_state = h_connection;
-                }
-                break;
-
-              /* proxy-connection */
-
-              case h_matching_proxy_connection:
-                parser->index++;
-                if (parser->index > sizeof(PROXY_CONNECTION)-1
-                    || c != PROXY_CONNECTION[parser->index]) {
-                  parser->header_state = h_general;
-                } else if (parser->index == sizeof(PROXY_CONNECTION)-2) {
-                  parser->header_state = h_connection;
-                }
-                break;
-
-              /* content-length */
-
-              case h_matching_content_length:
-                parser->index++;
-                if (parser->index > sizeof(CONTENT_LENGTH)-1
-                    || c != CONTENT_LENGTH[parser->index]) {
-                  parser->header_state = h_general;
-                } else if (parser->index == sizeof(CONTENT_LENGTH)-2) {
-                  parser->header_state = h_content_length;
-                }
-                break;
-
-              /* transfer-encoding */
-
-              case h_matching_transfer_encoding:
-                parser->index++;
-                if (parser->index > sizeof(TRANSFER_ENCODING)-1
-                    || c != TRANSFER_ENCODING[parser->index]) {
-                  parser->header_state = h_general;
-                } else if (parser->index == sizeof(TRANSFER_ENCODING)-2) {
-                  parser->header_state = h_transfer_encoding;
-                }
-                break;
-
-              /* upgrade */
-
-              case h_matching_upgrade:
-                parser->index++;
-                if (parser->index > sizeof(UPGRADE)-1
-                    || c != UPGRADE[parser->index]) {
-                  parser->header_state = h_general;
-                } else if (parser->index == sizeof(UPGRADE)-2) {
-                  parser->header_state = h_upgrade;
-                }
-                break;
-
-              case h_connection:
-              case h_content_length:
-              case h_transfer_encoding:
-              case h_upgrade:
-                if (ch != ' ') parser->header_state = h_general;
-                break;
-
-              default:
-                assert(0 && "Unknown header_state");
-                break;
+              } else {
+                /* h_CON forks: "con" + 'n' is connection, + 't' content-length */
+                parser->header_state = hs == (unsigned) h_CON && c == 't' ? h_matching_content_length : h_general;
+              }
+            } else if (hs == h_general) {
+              --p;
+              goto header_field_begin;
+            } else {
+              assert(hs >= (unsigned) h_connection && hs <= (unsigned) h_upgrade);
+              if (ch != ' ') parser->header_state = h_general;
             }
           }
         }
