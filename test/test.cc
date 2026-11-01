@@ -317,7 +317,34 @@ static void test_keep_alive() {
 		assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK);
 		assert(http_should_keep_alive(&parser) == 0);
 	}
-	std::printf("http_parser keep-alive OK: HTTP/1.1 persists, HTTP/1.0 closes\n");
+	{
+		// Transfer-Encoding in HTTP/1.0: the message is read and the connection closes after
+		// it (RFC 9112 section 6.1), whatever Connection says; lenient keeps 2.7.1. A strict
+		// build also refuses the request behind it, as after Connection: close.
+		const std::string msg = "POST / HTTP/1.0\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+		const std::string raw = msg + "GET /admin HTTP/1.1\r\nHost: x\r\n\r\n";
+		for (int lenient : { 0, 1 }) {
+			http_parser parser;
+			http_parser_init(&parser, HTTP_REQUEST);
+			parser.lenient_http_headers = lenient;
+			Collected c;
+			parser.data = &c;
+			http_parser_settings settings = make_settings();
+			http_parser_execute(&parser, &settings, msg.data(), msg.size());
+			assert(HTTP_PARSER_ERRNO(&parser) == HPE_OK && c.message_complete && c.body == "hello");
+			assert(http_should_keep_alive(&parser) == lenient);
+#if HTTP_PARSER_STRICT
+			http_parser_init(&parser, HTTP_REQUEST);
+			parser.lenient_http_headers = lenient;
+			Collected c2;
+			parser.data = &c2;
+			http_parser_execute(&parser, &settings, raw.data(), raw.size());
+			assert(c2.url == (lenient ? "//admin" : "/"));
+			assert(HTTP_PARSER_ERRNO(&parser) == (lenient ? HPE_OK : HPE_CLOSED_CONNECTION));
+#endif
+		}
+	}
+	std::printf("http_parser keep-alive OK: HTTP/1.1 persists, HTTP/1.0 closes, and so does HTTP/1.0 with Transfer-Encoding\n");
 }
 
 

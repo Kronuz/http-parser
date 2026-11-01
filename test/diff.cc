@@ -207,6 +207,30 @@ bool hardening_errno(unsigned e) {
 		e == HPE_INVALID_CONTENT_LENGTH || e == HPE_INVALID_CHUNK_SIZE || e == HPE_INVALID_VERSION;
 }
 
+// With lenient_http_headers unset, the inputs whose result changes on purpose beyond an early
+// hardening error: given the first event at which the parsers differ, the rule that changes it
+// (CHANGELOG.md, "Hardening"), or nullptr. Each rule's own cases, against its oracle, are in
+// the hardening sweep (section 6); here only old != new is allowed, and only for these.
+std::vector<std::pair<const char*, long>> changed = { { "http10-te-close", 0 } };
+
+const char* changed_class(const std::vector<Event>& a, const std::vector<Event>& b, size_t i) {
+	(void) a;
+	if (i < b.size() && i + 1 == b.size() && b[i].kind == RET) {
+		const Snap& s = b[i].snap;
+		// RFC 9112 section 6.1: after an HTTP/1.0 message with Transfer-Encoding the connection
+		// closes, and the next byte is an error where the old parser read another message.
+		if (s.http_errno == HPE_CLOSED_CONNECTION && (s.flags & F_CHUNKED) && (s.flags & F_CONNECTION_KEEP_ALIVE) &&
+				(s.http_major == 0 || (s.http_major == 1 && s.http_minor == 0)))
+			return "http10-te-close";
+	}
+	return nullptr;
+}
+
+void count_changed(const char* name) {
+	for (auto& c : changed)
+		if (std::strcmp(c.first, name) == 0) ++c.second;
+}
+
 // What a consumer sees of the parser: the read-only fields and the flags.
 bool public_equal(const Snap& a, const Snap& b) {
 	return a.flags == b.flags && a.content_length == b.content_length && a.http_major == b.http_major &&
@@ -242,6 +266,12 @@ bool check_mode(const std::string& what, enum http_parser_type t, const std::str
 	while (i < n && same(a[i], b[i])) ++i;
 	if (i == n && a.size() == b.size()) return true;
 	if (!lenient && i + 1 == b.size() && b[i].kind == RET && hardening_errno(b[i].snap.http_errno)) return true;
+	if (!lenient) {
+		if (const char* name = changed_class(a, b, i)) {
+			count_changed(name);
+			return true;
+		}
+	}
 	++failures;
 	if (failures <= 10) {
 		printf("MISMATCH %s%s type=%d plan=%s hc_ret=%d fail_at=%d pause_at=%d mask=%x eof=%d\n  input: %s\n", what.c_str(),
@@ -391,6 +421,11 @@ std::vector<Seed> corpus() {
 	res("res-headers", "HTTP/1.1 200 OK\r\nDate: Mon, 27 Jul 2009 12:28:53 GMT\r\nServer: Apache\r\nLast-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n"
 		"ETag: \"34aa387-d-1568eb00\"\r\nAccept-Ranges: bytes\r\nContent-Length: 51\r\nVary: Accept-Encoding\r\nContent-Type: text/plain\r\n\r\n"
 		"Hello World! My payload includes a trailing CRLF.\r\n");
+	// Transfer-Encoding before HTTP/1.1, then another message on the same connection.
+	req("http10-te", "POST / HTTP/1.0\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+		"GET /admin HTTP/1.1\r\nHost: a\r\n\r\n");
+	res("res-http10-te", "HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n"
+		"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
 	return v;
 }
 
@@ -505,7 +540,8 @@ const enum http_parser_type types[] = { HTTP_REQUEST, HTTP_RESPONSE, HTTP_BOTH }
 }  // namespace
 
 // The parser alone, not lenient: `in` must stop with `want` (HPE_OK: parse whole, with a
-// message completed), in one call, byte by byte, and (all_cuts) cut in two everywhere; and,
+// message completed; HPE_CLOSED_CONNECTION: a message completed, and the bytes after it are
+// refused), in one call, byte by byte, and (all_cuts) cut in two everywhere; and,
 // given `at`, the one call must stop at that offset (the byte that breaks the rule).
 const enum http_parser_type t_req = HTTP_REQUEST, t_res = HTTP_RESPONSE;
 
@@ -523,7 +559,8 @@ void harden(enum http_parser_type t, const std::string& in, enum http_errno want
 		bool completed = std::any_of(ev.begin(), ev.end(), [](const Event& e) { return e.kind == MSG_DONE; });
 		long stop = !ev.empty() && ev.back().kind == RET ? ev.back().off : -1;
 		bool where = at < 0 || !plan.empty() || stop == at;
-		if (got == (unsigned) want && (want != HPE_OK || completed) && where) continue;
+		bool must_complete = want == HPE_OK || want == HPE_CLOSED_CONNECTION;
+		if (got == (unsigned) want && (!must_complete || completed) && where) continue;
 		++failures;
 		if (failures <= 10) {
 			printf("HARDENING %s type=%d plan=%s: want %s at %ld, got %s at %ld%s\n", show(in).c_str(), (int) t,
@@ -819,6 +856,20 @@ int main(int argc, char** argv) {
 			harden(t_res, "HTTP/" + std::string(v) + " 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
 		}
 		harden(t_res, "HTTP/0.9 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_OK);
+#if HTTP_PARSER_STRICT
+		// Transfer-Encoding before HTTP/1.1: the message is read, then the connection closes
+		// (RFC 9112 section 6.1), whatever Connection says. (A non-strict build reads on after
+		// any message; http_should_keep_alive() is 0 there, test/test.cc.)
+		const std::string next = "GET /admin HTTP/1.1\r\nHost: a\r\n\r\n";
+		for (const char* line : { "POST / HTTP/1.0", "POST / HTTP/1.0\r\nConnection: keep-alive" }) {
+			const std::string msg = std::string(line) + "\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+			harden(t_req, msg + next, HPE_CLOSED_CONNECTION, true, (long) msg.size());
+		}
+		harden(t_res, "HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+			"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", HPE_CLOSED_CONNECTION, true, 76);
+		harden(t_req, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n" + next, HPE_OK);
+		harden(t_req, "POST / HTTP/1.0\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\nhello" + next, HPE_OK);
+#endif
 	}
 	printf("hardening: %ld checks, %ld failures\n", checks, failures);
 
@@ -839,6 +890,15 @@ int main(int argc, char** argv) {
 	}
 	printf("random: %ld checks, %ld failures\n", checks, failures);
 
+	for (const auto& c : changed) {
+		printf("changed on purpose, %s: %ld differences\n", c.first, c.second);
+		// A rule the inputs above never reach is not tested (a non-strict build never
+		// refuses the bytes after a message).
+		if (c.second == 0 && (HTTP_PARSER_STRICT || std::strcmp(c.first, "http10-te-close") != 0)) {
+			printf("FAILED: no input reaches %s\n", c.first);
+			++failures;
+		}
+	}
 	printf("%s: %ld checks, %ld failures\n", failures ? "FAILED" : "all http-parser differential checks passed", checks, failures);
 	return failures ? 1 : 0;
 }

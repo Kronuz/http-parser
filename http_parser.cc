@@ -2455,6 +2455,12 @@ http_should_keep_alive (const http_parser *parser)
     if (!(parser->flags & F_CONNECTION_KEEP_ALIVE)) {
       return 0;
     }
+    /* Unless lenient: Transfer-Encoding before HTTP/1.1 is faulty framing, and the
+     * connection closes after the message (RFC 9112 section 6.1) */
+    if (!parser->lenient_http_headers && (parser->flags & F_CHUNKED) &&
+        parser->http_major < 2) {
+      return 0;
+    }
   }
 
   return !http_message_needs_eof(parser);
