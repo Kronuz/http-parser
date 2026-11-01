@@ -1306,14 +1306,15 @@ reexecute:
       {
         if (ch == CR) {
           UPDATE_STATE(s_headers_almost_done);
-          break;
+          NEXTCHAR_COUNTED();
+          goto headers_almost_done;
         }
 
         if (ch == LF) {
           /* they might be just sending \n instead of \r\n so this would be
            * the second \n to denote the end of headers*/
           UPDATE_STATE(s_headers_almost_done);
-          REEXECUTE();
+          goto headers_almost_done;
         }
 
         c = TOKEN(ch);
@@ -1845,6 +1846,7 @@ header_field_begin:
         }
       }
 
+      headers_almost_done:
       case s_headers_almost_done:
       {
         STRICT_CHECK(ch != LF);
@@ -1853,7 +1855,7 @@ header_field_begin:
           /* End of a chunked request */
           UPDATE_STATE(s_message_done);
           CALLBACK_NOTIFY_NOADVANCE(chunk_complete);
-          REEXECUTE();
+          goto message_done;
         }
 
         /* Cannot use chunked encoding and a content-length header together
@@ -1903,9 +1905,10 @@ header_field_begin:
           RETURN(p - data);
         }
 
-        REEXECUTE();
+        goto headers_done;
       }
 
+      headers_done:
       case s_headers_done:
       {
         int hasBody;
@@ -1949,9 +1952,15 @@ header_field_begin:
           }
         }
 
+        if (CURRENT_STATE() == s_body_identity) {
+          NEXTCHAR();
+          goto body_identity;
+        }
+
         break;
       }
 
+      body_identity:
       case s_body_identity:
       {
         uint64_t to_read = MIN(parser->content_length,
@@ -1982,7 +1991,7 @@ header_field_begin:
            * important for applications, but let's keep it for now.
            */
           CALLBACK_DATA_(body, p - body_mark + 1, p - data);
-          REEXECUTE();
+          goto message_done;
         }
 
         break;
@@ -1995,6 +2004,7 @@ header_field_begin:
 
         break;
 
+      message_done:
       case s_message_done:
         UPDATE_STATE(NEW_MESSAGE());
         CALLBACK_NOTIFY(message_complete);
