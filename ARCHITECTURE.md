@@ -130,14 +130,27 @@ every path into it. `HTTP_PARSER_NO_SIMD` turns the vector code off.
 What the parser accepts follows llhttp's default, the reference its conformance test
 (`test/conformance.cc`, llhttp's own suite) holds it to, on the points that decide
 where a message ends: every line ends in CRLF, a header value holds no control byte
-but HT and no obs-fold, a request's `Transfer-Encoding` is `chunked` alone and once,
-`Content-Length` is digits (spaces after them only), a chunk size is followed by CRLF
-or well-formed extensions, and the version is HTTP/0.9, 1.0, 1.1 or 2.0. Each rule is
-one check in the state that sees the byte, under `!lenient`; two header states
+but HT and no obs-fold, a request's `Transfer-Encoding` is `chunked` alone and once and a
+response's has no coding after `chunked`, `Content-Length` is digits (spaces after them
+only) and not in a trailer section, a chunk size is followed by CRLF or well-formed
+extensions, a request carries a version, 1.0, 1.1 or 2.0 (a response 0.9 too), and a
+status is three digits after one space. Framing follows RFC 9112 section 6: the
+connection closes after an HTTP/1.0 message with `Transfer-Encoding`
+(`http_should_keep_alive()`), a 1xx, 204 or 304 response ends at its header section,
+and only a 101 is an upgrade. Each rule is one check in the state that sees the byte,
+under `!lenient`; two header states
 (`h_transfer_encoding_other`, `h_content_length_ws`) carry a header's kind to the end of
 its line, and `parser->index` the place in a chunk extension. With
 `lenient_http_headers` set the checks are off and the parser is 2.7.1's again, which
 `test/diff.cc` checks against the frozen copy.
+
+The parse loop is a function template on `lenient`, compiled twice and called by
+`http_parser_execute()` after one test of the flag. In each copy the flag is a constant:
+the strict copy has no branches for the lenient paths, and neither keeps the flag in a
+register across the loop, which on x86-64 cost spills on every state. Two small helpers
+are inlined into the loop instead of called: the keep-alive test of `NEW_MESSAGE()`
+(`should_keep_alive()`, which `http_should_keep_alive()` also calls), and the header-byte
+check, a 256-byte table (`header_char`) built from `IS_HEADER_CHAR`.
 
 ## Errors and pausing
 

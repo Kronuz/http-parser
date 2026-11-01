@@ -36,12 +36,29 @@ responses), `2` that there is no body and no further messages (used for CONNECT)
 The parser rejects what request smuggling relies on: a line ended by a bare LF
 (`HPE_CR_EXPECTED`), obs-fold and control bytes in a header value
 (`HPE_INVALID_HEADER_TOKEN`), a request `Transfer-Encoding` other than `chunked`
-alone (`HPE_INVALID_TRANSFER_ENCODING`), a `Content-Length` with spaces inside or empty
-(`HPE_INVALID_CONTENT_LENGTH`), a malformed chunk size line (`HPE_INVALID_CHUNK_SIZE`)
-and an HTTP version other than 0.9, 1.0, 1.1 or 2.0 (`HPE_INVALID_VERSION`). Set
-`p->lenient_http_headers = 1` after `http_parser_init()` to accept them as http_parser
-2.7.1 did (it also skips the header-value byte check, as before). Reject a request the
+alone, an empty `Transfer-Encoding`, and in a response a coding after `chunked`
+(`HPE_INVALID_TRANSFER_ENCODING`), a `Content-Length` with spaces inside, empty, or in
+a trailer section (`HPE_INVALID_CONTENT_LENGTH`), a malformed chunk size line
+(`HPE_INVALID_CHUNK_SIZE`), an HTTP version other than 1.0, 1.1 or 2.0 in a request
+and 0.9, 1.0, 1.1 or 2.0 in a response, and a request line without one
+(`HPE_INVALID_VERSION`), and a status that is not one space and three digits
+(`HPE_INVALID_STATUS`).
+
+It frames what it accepts as RFC 9112 section 6 does: after an HTTP/1.0 message with
+`Transfer-Encoding`, `http_should_keep_alive()` is 0 and the next byte is
+`HPE_CLOSED_CONNECTION`; a 1xx, 204 or 304 response has no body, whatever
+`Content-Length` or `Transfer-Encoding` it carries; and only a 101 response is an
+upgrade.
+
+Set `p->lenient_http_headers = 1` after `http_parser_init()` to parse as http_parser
+2.7.1 did (it also skips the header-value byte check). That turns off every rule above,
+and so re-enables request smuggling: set it only for trusted peers. Reject a request the
 parser rejects; do not forward it.
+
+A build with `-DHTTP_PARSER_STRICT=0` drops checks these rules do not cover: it takes a
+space before a header's colon (`Content-Length : 5` frames the body), a bare CR as a line
+end, whitespace at the start of a header line and data after `Connection: close`. Do not
+parse untrusted input with it.
 
 ## Callback rules
 

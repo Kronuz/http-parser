@@ -35,21 +35,21 @@ request/connection.md:392	B-lenient	lenient-keep-alive: data after close rejecte
 request/connection.md:611	B-error	space before colon rejected; header slice delivered first
 request/connection.md:637	B-lenient	lenient-headers: space before colon rejected
 request/content-length.md:75	B-error	Content-Length overflow rejected; header slice delivered first
-request/content-length.md:129	B-error	both reject (fix/smuggling); the callbacks before the error differ: Transfer-Encoding: identity with Content-Length accepted
+request/content-length.md:129	B-error	both reject (the hardening); the callbacks before the error differ: Transfer-Encoding: identity with Content-Length accepted
 request/content-length.md:159	B-error	space before colon rejected; header slice delivered first
 request/content-length.md:189	B-lenient	lenient-headers: space before colon rejected
 request/content-length.md:229	B-lenient	lenient-chunked-length: identity with Content-Length rejected
 request/content-length.md:317	B-stricter	tabs around the Content-Length value rejected
-request/content-length.md:344	B-error	both reject (fix/smuggling); the callbacks before the error differ: `4 2` read as 42
-request/content-length.md:370	B-error	both reject (fix/smuggling); the callbacks before the error differ: `13 37` read as 1337
+request/content-length.md:344	B-error	both reject (the hardening); the callbacks before the error differ: `4 2` read as 42
+request/content-length.md:370	B-error	both reject (the hardening); the callbacks before the error differ: `13 37` read as 1337
 request/content-length.md:519	B-lenient	lenient-optional-lf-after-cr: CR without LF rejected
 request/invalid.md:66	B-method	ANNOUNCE with HTTP/1.1: rejected at the method
-request/invalid.md:113	B-error	both reject (fix/smuggling); the callbacks before the error differ: headers separated by bare LF accepted
+request/invalid.md:113	B-error	both reject (the hardening); the callbacks before the error differ: headers separated by bare LF accepted
 request/invalid.md:181	B-lenient	lenient-optional-lf-after-cr: rejected earlier
-request/invalid.md:454	B-error	both reject (fix/smuggling); the callbacks before the error differ: `Dummy: x\nContent-Length: 23`: the bare LF ends the header and the next request is smuggled in the body
+request/invalid.md:454	B-error	both reject (the hardening); the callbacks before the error differ: `Dummy: x\nContent-Length: 23`: the bare LF ends the header and the next request is smuggled in the body
 request/invalid.md:568	B-lenient	lenient-all: bare LF headers (lenient_http_headers keeps 2.7.1), rejected at the chunk size
 request/lenient-header-value-relaxed.md:8	B-lenient	lenient-header-value-relaxed: \f rejected
-request/lenient-header-value-relaxed.md:38	B-error	both reject (fix/smuggling); the callbacks before the error differ: \f in a header value accepted
+request/lenient-header-value-relaxed.md:38	B-error	both reject (the hardening); the callbacks before the error differ: \f in a header value accepted
 request/lenient-headers.md:109	B-lenient	lenient-headers: empty header lines separated by CR rejected
 request/lenient-version.md:4	B-lenient	lenient-version: HTTP/5.6 rejected
 request/method.md:4	B-method	REPORT
@@ -61,19 +61,19 @@ request/method.md:430	B-method	ANNOUNCE with RTSP/1.0
 request/method.md:458	B-method	PRI (HTTP/2 preface)
 request/method.md:482	B-method	QUERY
 request/sample.md:314	B-stricter	a request line without a version rejected: HTTP/0.9 has no headers (llhttp reads them)
-request/sample.md:394	B-error	both reject (fix/smuggling); the callbacks before the error differ: obs-fold lines ended by bare LF parsed as headers
+request/sample.md:394	B-error	both reject (the hardening); the callbacks before the error differ: obs-fold lines ended by bare LF parsed as headers
 request/sample.md:454	B-lenient	lenient-optional-lf-after-cr: CR without LF rejected
-request/transfer-encoding.md:490	B-error	both reject (fix/smuggling); the callbacks before the error differ: unknown coding `pigeons` ignored: no body
-request/transfer-encoding.md:521	B-error	both reject (fix/smuggling); the callbacks before the error differ: Transfer-Encoding: identity with Content-Length accepted
+request/transfer-encoding.md:490	B-error	both reject (the hardening); the callbacks before the error differ: unknown coding `pigeons` ignored: no body
+request/transfer-encoding.md:521	B-error	both reject (the hardening); the callbacks before the error differ: Transfer-Encoding: identity with Content-Length accepted
 request/transfer-encoding.md:556	B-lenient	lenient-chunked-length: identity with Content-Length rejected
-request/transfer-encoding.md:639	B-error	both reject (fix/smuggling); the callbacks before the error differ: `chunked, deflate` read as no body; the body is parsed as the next request
-request/transfer-encoding.md:670	B-error	both reject (fix/smuggling); the callbacks before the error differ: `chunked` then `deflate` headers read as chunked
+request/transfer-encoding.md:639	B-error	both reject (the hardening); the callbacks before the error differ: `chunked, deflate` read as no body; the body is parsed as the next request
+request/transfer-encoding.md:670	B-error	both reject (the hardening); the callbacks before the error differ: `chunked` then `deflate` headers read as chunked
 request/transfer-encoding.md:706	B-lenient	lenient-transfer-encoding: `chunked, deflate` rejected
 request/transfer-encoding.md:739	B-lenient	lenient-transfer-encoding: `chunked` then `deflate` rejected
 request/transfer-encoding.md:777	B-stricter	`deflate, chunked` rejected: a request's Transfer-Encoding is `chunked` alone
 request/transfer-encoding.md:819	B-stricter	`deflate` then `chunked` headers rejected: a request's Transfer-Encoding is `chunked` alone
-request/transfer-encoding.md:866	B-error	both reject (fix/smuggling); the callbacks before the error differ: `chunkedchunked` ignored: no body
-request/transfer-encoding.md:968	B-error	both reject (fix/smuggling); the callbacks before the error differ: `chunked` folded with `abc` (lenient-headers): no body
+request/transfer-encoding.md:866	B-error	both reject (the hardening); the callbacks before the error differ: `chunkedchunked` ignored: no body
+request/transfer-encoding.md:968	B-error	both reject (the hardening); the callbacks before the error differ: `chunked` folded with `abc` (lenient-headers): no body
 request/transfer-encoding.md:1051	B-lenient	lenient-optional-lf-after-cr: chunk line without LF rejected
 request/transfer-encoding.md:1123	B-error	chunk data without CRLF rejected; body slice delivered first
 request/transfer-encoding.md:1166	B-lenient	lenient-optional-crlf-after-chunk: rejected
@@ -85,14 +85,14 @@ response/connection.md:586	R-callbacks	on_message_begin for each leading CRLF
 response/content-length.md:168	B-stricter	tabs around the Content-Length value rejected
 response/invalid.md:90	B-error	tab after the version rejected; on_message_begin for the leading CR first
 response/invalid.md:151	B-lenient	lenient-optional-lf-after-cr: rejected
-response/invalid.md:287	B-error	both reject (fix/smuggling); the callbacks before the error differ: status line and headers ended by bare LF accepted
-response/invalid.md:327	B-error	both reject (fix/smuggling); the callbacks before the error differ: status line and headers ended by bare LF accepted
+response/invalid.md:287	B-error	both reject (the hardening); the callbacks before the error differ: status line and headers ended by bare LF accepted
+response/invalid.md:327	B-error	both reject (the hardening); the callbacks before the error differ: status line and headers ended by bare LF accepted
 response/lenient-version.md:4	B-lenient	lenient-version: HTTP/5.6 rejected
 response/pipelining.md:4	R-callbacks	on_message_begin for each leading CRLF
 response/sample.md:40	B-method	RTSP/1.1 response
 response/sample.md:60	B-method	ICE/1.1 response
 response/sample.md:310	R-callbacks	no on_status for an empty reason phrase
-response/sample.md:330	B-error	both reject (fix/smuggling); the callbacks before the error differ: status line ended by bare LF accepted
+response/sample.md:330	B-error	both reject (the hardening); the callbacks before the error differ: status line ended by bare LF accepted
 response/sample.md:351	B-lenient	lenient-optional-cr-before-lf: status line ended by bare LF rejected
 response/sample.md:695	R-callbacks	on_message_begin for each leading CRLF
 response/transfer-encoding.md:98	B-stricter	`chunked` then `identity` rejected: no coding after chunked (llhttp reads until EOF)
@@ -112,8 +112,8 @@ split:request/invalid.md:372	B-split	header slice delivered before the error
 split:request/invalid.md:396	B-split	header slice delivered before the error
 split:request/invalid.md:425	B-split	header slice delivered before the error
 split:request/invalid.md:454	B-split	callbacks before the error depend on where the input is split
-split:request/lenient-header-value-relaxed.md:8	B-split	both reject the \f (fix/smuggling); a header slice is delivered first when split
-split:request/lenient-header-value-relaxed.md:38	B-split	both reject the \f (fix/smuggling); a header slice is delivered first when split
+split:request/lenient-header-value-relaxed.md:8	B-split	both reject the \f (the hardening); a header slice is delivered first when split
+split:request/lenient-header-value-relaxed.md:38	B-split	both reject the \f (the hardening); a header slice is delivered first when split
 split:request/sample.md:314	B-split	callbacks before the error depend on where the input is split
 split:request/sample.md:394	B-split	callbacks before the error depend on where the input is split
 split:request/transfer-encoding.md:1123	B-split	body slice delivered before the error

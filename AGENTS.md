@@ -148,7 +148,12 @@ is the library's only external dependency. The implementation's other include,
   llhttp's suite that starts or stops differing fails it until
   `test/llhttp_divergences.txt` says so, with a category. Each hardening check is one
   `if (!lenient ...)` in the state that sees the byte; add it to the hardening sweep in
-  `test/diff.cc` and a mutant that removes it to `tools/mutants.py`.
+  `test/diff.cc` and a mutant that removes it to `tools/mutants.py`. A rule that changes
+  framing without an error (the connection closing after an HTTP/1.0 message with
+  `Transfer-Encoding`, no body for a 1xx, 204 or 304 response, Upgrade only on a 101) is a
+  named class in `changed_class()` in `test/diff.cc`: the only place the strict parser may
+  differ from the frozen one other than by stopping with a hardening error, and every class
+  must be reached by the inputs.
   Add the new path's boundary cases to `test/diff.cc` (a sweep over every byte value
   at every position, and a buffer that ends inside the run), add its mutants to
   `tools/mutants.py`, and check that every one of them is killed.
@@ -168,6 +173,11 @@ is the library's only external dependency. The implementation's other include,
 - **`find_crlf` stays out of line.** Inlined into `http_parser_execute()` the vector
   code changes its register allocation and slows every state, by up to 1.5x on a
   request line. Re-measure with `bench/bench.cc` before touching the attributes.
+- **Both copies of the parse loop stay out of line.** `execute<lenient>` is
+  `HTTP_PARSER_NOINLINE`: inlined into `http_parser_execute()` the two copies share one
+  register allocation, and the strict one loses what the template is for. A `!lenient`
+  check is free in either copy; a flag read into a local (as 2.7.1 did) is not, on
+  x86-64.
 - **A direct transition counts its byte like the loop head.** `NEXTCHAR_COUNTED()`
   is for a target state at or below `s_headers_done` (it adds to `nread` and checks
   the limit), `NEXTCHAR()` for the body states (nothing is counted). The wrong one
@@ -209,13 +219,16 @@ stay reconcilable with upstream as a plain diff. The hardening checks (ARCHITECT
 "Strictness") carry upstream's 2.8-2.9.4 request-framing fixes and llhttp's rules.
 
 Consumed by [Kronuz/http](https://github.com/Kronuz/http) (the HTTP application
-layer): it parses with this fork rather than a stricter parser like llhttp because
-this one accepts arbitrary request methods, which Xapiand's custom REST verbs
-(`COUNT`, `INFO`, `DUMP`, `RESTORE`, …) require.
+layer). The method table is fixed (`HTTP_METHOD_MAP`, 30 methods): any other method is
+`HPE_INVALID_METHOD`. It holds Xapiand's verbs (`CHECK`, `CLOSE`, `COMMIT`, `COUNT`,
+`DUMP`, `FLUSH`, `INFO`, `OPEN`, `QUIT`, `RESTORE`, `UPDATE`, `UPSERT`, `WAL`), which
+stock llhttp rejects; llhttp regenerated with the same table accepts the same set
+(`docs/perf/llhttp-evaluation.md`).
 
 **Upstream fixes:** the fork is version 2.7.1; the Joyent upstream's final release is
-2.9.4. The hardening carries upstream's request-framing and memory-safety fixes
-(9f489a4, 9ce7316, 01da95f, 3502589, 2a0d106, 7d5c99d); the response-side ones (05525c5,
-3b0da34, 25de6ed), a7c2e86 (`nread` at a buffer boundary), 3123273 (`parse_url("")`)
-and 0ae8d93 (runtime header limit) are not in yet. Keep edits reconcilable so that each
+2.9.4. The hardening carries upstream's framing and memory-safety fixes (9f489a4,
+9ce7316, 01da95f, 3502589, 2a0d106, 7d5c99d, and 05525c5, Upgrade only on a 101); the
+callback ones (3b0da34, `on_status` without a reason; 25de6ed, one `on_message_begin`
+after leading CRLFs), a7c2e86 (`nread` at a buffer boundary), 3123273
+(`parse_url("")`) and 0ae8d93 (runtime header limit) are not in. Keep edits reconcilable so that each
 can still be applied as a plain diff.

@@ -52,7 +52,8 @@ typedef unsigned __int64 uint64_t;
 #endif
 
 /* Compile with -DHTTP_PARSER_STRICT=0 to make less checks, but run
- * faster
+ * faster. Such a build takes a space before a header's colon, a bare CR,
+ * and data after Connection: close, and must not parse untrusted input.
  */
 #ifndef HTTP_PARSER_STRICT
 # define HTTP_PARSER_STRICT 1
@@ -114,6 +115,9 @@ struct http_parser {
   unsigned int state : 7;        /* enum state from http_parser.c */
   unsigned int header_state : 7; /* enum header_state from http_parser.c */
   unsigned int index : 7;        /* index into current matcher */
+  /* 1: accept what http_parser 2.7.1 accepted. This turns off every check
+   * against request smuggling (docs/API.md, "Strictness"): for trusted peers
+   * only. */
   unsigned int lenient_http_headers : 1;
 
   uint32_t nread;          /* # bytes read in various scenarios */

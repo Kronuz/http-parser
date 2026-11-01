@@ -32,14 +32,72 @@ callback, its bytes and offset, every return of `http_parser_execute()` and ever
   - an HTTP version with more than one digit on a side, or other than 0.9, 1.0, 1.1 or 2.0
     (`HPE_INVALID_VERSION`; upstream 9f489a4).
 
+  The security review of these rules added, also unless lenient:
+  - after an HTTP/1.0 message with `Transfer-Encoding`, `http_should_keep_alive()` is 0 and
+    the next byte is `HPE_CLOSED_CONNECTION`, whatever `Connection` says: RFC 9112 section
+    6.1 treats such framing as faulty and closes after the message (llhttp keeps the
+    connection, and Kronuz/http served the request behind it);
+  - a request line without a version is `HPE_INVALID_VERSION`: an HTTP/0.9 request has no
+    headers, and the parser read a header section and a body after it;
+  - `Content-Length` in a trailer section is `HPE_INVALID_CONTENT_LENGTH`, as in llhttp
+    (it set `content_length` without framing anything);
+  - in responses, llhttp's suite showed the same kinds of disagreement, now closed: an empty
+    `Transfer-Encoding`, or one after `chunked`, is `HPE_INVALID_TRANSFER_ENCODING`; a 1xx,
+    204 or 304 response has no body whatever `Content-Length` or `Transfer-Encoding` it
+    names (RFC 9112 section 6.3; the next response was read as its body); only a 101 is an
+    upgrade (upstream 05525c5); and the status is one space and three digits
+    (`HPE_INVALID_STATUS`).
+
   Setting `parser->lenient_http_headers = 1` after `http_parser_init()` restores the
-  2.7.1 behavior for every one of these: `test/diff.cc` holds the lenient parser to the
-  frozen one exactly, and the strict one to it up to these errors.
+  2.7.1 behavior for every one of these, and with it request smuggling: `test/diff.cc`
+  holds the lenient parser to the frozen one exactly, and the strict one to it up to these
+  errors and three named framing changes (`changed_class()`).
 - **`http_parser_parse_url()` reads only the port's own digits.** It called `strtoul`, which
   reads on past `buflen` when the buffer is not NUL-terminated (upstream 9ce7316).
 
+### Changed
+
+- **The parse loop is compiled twice, strict and lenient.** The hardening as first written
+  kept `lenient_http_headers` in a local across the loop: free on an M4 Pro (0.98-1.06x of
+  476ba60), but 1.04-1.19x on an i9, the request line included, from 58 more stack
+  references in the loop on x86-64. The loop is now a template on the flag, both copies out
+  of line, and two helpers are inlined into it: the keep-alive test at the end of a message
+  and the header-byte check (a table). Against 476ba60, same binary, two interleaved rounds
+  of 15 trials (`quiet strict`, A/A 0.96-1.02):
+
+  | Workload | M4 Pro | i9-9980HK |
+  |---|---|---|
+  | GET, 3 headers | 0.84-0.85x | 0.89-0.90x |
+  | GET, 14 headers | 0.98x | 0.94-0.96x |
+  | GET, 64 custom headers | 1.03x | 0.84x |
+  | POST, 1 KB body | 1.08x | 0.93-0.94x |
+  | POST, 64 KB body | 1.00-1.02x | 0.94-0.95x |
+  | Chunked, 16 x 256 B | 0.78-0.79x | 0.97-0.98x |
+  | 32 pipelined GETs | 0.85x | 0.88x |
+  | GET, 64-byte segments | 1.00-1.01x | 0.99-1.00x |
+  | Response, 8 headers | 1.06-1.07x | 0.89x |
+  | Request line only | 0.78-0.79x | 0.89-0.93x |
+  | 1 short header | 0.88-0.89x | 0.98x |
+  | 1 long header | 0.86-0.87x | 0.91x |
+  | 125-byte URL | 0.80x | 0.89-0.90x |
+
+  Two rows stay slower on the M4 (a body framed by `Content-Length`: POST 1 KB and the
+  response). None of ten layouts measured (the flag read at each use, the template inlined,
+  a table for the value scan, the checks taken out one by one) was within 3% on every row of
+  both machines.
+
+### Fixed
+
+- The README and AGENTS.md said the fork accepts arbitrary request methods. The method
+  table is fixed (30 methods, Xapiand's verbs among them) and any other method is
+  `HPE_INVALID_METHOD`; they say so now.
+
 ### Added
 
+- `docs/perf/llhttp-evaluation.md`: whether to swap the engine for llhttp or bring in pieces
+  of it. It compares the fork with upstream 2.8.0 to 2.9.4, runs llhttp's suite, and measures
+  llhttp regenerated with this parser's methods behind its API (not faster: 0.88-1.22x on an
+  M4 Pro, 0.96-1.64x on an i9). The owner kept the engine, with the hardening and the suite.
 - `HPE_INVALID_TRANSFER_ENCODING` and `HPE_CR_EXPECTED`, after `HPE_UNKNOWN`: the numbers of
   the existing errors are unchanged.
 - `test/conformance.cc` (CTest `http_parser_conformance`): llhttp's markdown suite (v9.4.3,

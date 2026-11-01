@@ -21,14 +21,19 @@ reflective enums and Xapiand's extra verbs.
 - **Complete HTTP/1.x framing.** `Content-Length` and chunked bodies, keep-alive,
   upgrades, and a typed error code for malformed input.
 - **Strict where smuggling lives.** Bare LF, obs-fold, control bytes in values, a
-  request `Transfer-Encoding` other than `chunked`, malformed `Content-Length` and chunk
-  lines are errors, as in llhttp, whose own conformance suite runs in CI;
-  `lenient_http_headers = 1` restores http_parser 2.7.1's behavior.
+  request `Transfer-Encoding` other than `chunked`, malformed `Content-Length`, chunk and
+  status lines, and a request line without a version are errors, as in llhttp, whose own
+  conformance suite runs in CI. The connection closes after an HTTP/1.0 message with
+  `Transfer-Encoding`, and a 1xx, 204 or 304 response has no body.
+  `lenient_http_headers = 1` parses as http_parser 2.7.1 did, smuggling included: for
+  trusted peers only.
 - **Reflective enums.** Methods, statuses, and errors are
   [enum-reflection](https://github.com/Kronuz/enum-reflection) enums, so they
   print and parse by name.
-- **More verbs.** `SEARCH`, `COMMIT`, `UPDATE`, and others alongside the standard
-  methods.
+- **A fixed method table.** The standard methods, `PATCH`, `PURGE`, `LINK`, `UNLINK`,
+  WebDAV's `COPY`, `LOCK`, `MOVE`, `SEARCH`, `UNLOCK`, and Xapiand's `CHECK`, `CLOSE`,
+  `COMMIT`, `COUNT`, `DUMP`, `FLUSH`, `INFO`, `OPEN`, `QUIT`, `RESTORE`, `UPDATE`,
+  `UPSERT`, `WAL`: 30 in all. Any other method is `HPE_INVALID_METHOD`.
 
 ## 📦 Installation
 
@@ -91,22 +96,24 @@ and shows the error for a malformed request.
 The parse loop dispatches on one state per byte, so the parser takes everything it
 can in larger steps: a run of URL characters, the end of a request line, the end
 of a header value (16 bytes at a time with NEON or SSE2), and the next state of a
-header line or a chunk frame without going back through the dispatch. The results,
-callbacks and offsets are those of the byte-at-a-time parser; `test/diff.cc`,
-`test/fuzz.cc` and `tools/mutants.py` hold it to that.
+header line or a chunk frame without going back through the dispatch. The loop is
+compiled twice, strict and lenient, so neither carries the flag. The results,
+callbacks and offsets are those of the byte-at-a-time parser, except where the
+strict rules above reject or reframe a message; `test/diff.cc`, `test/fuzz.cc` and
+`tools/mutants.py` hold it to that.
 
 `bench/bench.cc` times each workload against the frozen byte-at-a-time parser and
 llhttp 9.4.3 (ns per message, `-O3`, interleaved trials, quiet machine):
 
 | Workload | M4 Pro | llhttp | i9-9980HK | llhttp |
 |---|---:|---:|---:|---:|
-| GET, 3 headers | 78 | 75 | 175 | 185 |
-| GET, 14 headers (browser) | 275 | 258 | 620 | 617 |
-| GET, 64 custom headers | 1033 | 1046 | 2525 | 2346 |
-| POST, 1 KB body | 98 | 89 | 241 | 237 |
-| Chunked body, 16 x 256 B | 217 | 183 | 428 | 454 |
-| Request line only | 38 | 35 | 75 | 83 |
-| 125-byte URL | 65 | 75 | 130 | 147 |
+| GET, 3 headers | 66 | 72 | 151 | 174 |
+| GET, 14 headers (browser) | 262 | 243 | 545 | 589 |
+| GET, 64 custom headers | 1022 | 1042 | 1959 | 2214 |
+| POST, 1 KB body | 101 | 85 | 218 | 218 |
+| Chunked body, 16 x 256 B | 167 | 177 | 406 | 428 |
+| Request line only | 30 | 34 | 64 | 79 |
+| 125-byte URL | 51 | 72 | 108 | 138 |
 
 Apple M4 Pro, Apple clang 17; Intel i9-9980HK, Apple clang 17, no `-march`.
 Reproduce with:
