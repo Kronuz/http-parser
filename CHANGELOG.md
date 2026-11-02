@@ -7,6 +7,8 @@ nothing the parser reports changes: the differential test (`test/diff.cc`) holds
 callback, its bytes and offset, every return of `http_parser_execute()` and every field of
 `struct http_parser` to the frozen parser in `test/http_parser_old.cc`.
 
+Upgrading a pin from before 2026-10-30: [the consumer upgrade note](https://github.com/Kronuz/cpp-libraries/blob/main/docs/UPGRADING-2026-10.md#http-parser) lists what changes for callers, how to find affected inputs, the commits not to pin, and the speedup.
+
 ## 2026-11-01
 
 ### Changed (security)
