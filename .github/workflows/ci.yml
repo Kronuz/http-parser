@@ -4,19 +4,22 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: '23 7 * * *'  # nightly: flaky timing, and drift in libraries tracked at main
+    inputs:
+      nightly: { type: boolean, default: false }
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   ci:
     uses: Kronuz/cpp-libraries/.github/workflows/cmake.yml@main
+    with:
+      nightly: ${{ inputs.nightly || false }}
   # The byte loops instead of NEON and SSE2, and the non-strict parser (the URL table
   # with high bytes): the same tests, no sanitizers.
   scalar:
     uses: Kronuz/cpp-libraries/.github/workflows/cmake.yml@main
     with:
+      nightly: ${{ inputs.nightly || false }}
       cmake_args: -DCMAKE_CXX_FLAGS=-DHTTP_PARSER_NO_SIMD
       sanitize: false
       tsan: false
@@ -24,6 +27,7 @@ jobs:
   lenient:
     uses: Kronuz/cpp-libraries/.github/workflows/cmake.yml@main
     with:
+      nightly: ${{ inputs.nightly || false }}
       cmake_args: -DCMAKE_CXX_FLAGS=-DHTTP_PARSER_STRICT=0
       sanitize: false
       tsan: false
