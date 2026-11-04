@@ -15,7 +15,7 @@ include(FetchContent)
 FetchContent_Declare(
   enum_reflection
   GIT_REPOSITORY https://github.com/Kronuz/enum-reflection.git
-  GIT_TAG        653fb34844e63517da14659cc8f063643bf4a085
+  GIT_TAG        a7202ada8d27e7eb2d4713fbfd3b43eaa347fc91
 )
 FetchContent_MakeAvailable(enum_reflection)
 
