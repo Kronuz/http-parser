@@ -2,6 +2,10 @@
 
 The core entry points (full declarations in `http_parser.h`):
 
+`http_parser_set_allow_equal_content_length(p, enabled)` opts one initialized parser into accepting repeated numeric-equal Content-Length fields. Set it before parsing; initialization restores default duplicate rejection. Conflicting lengths, numeric overflow and chunked/length conflicts remain errors. The opt-in rejects empty and folded length values. It does not relax other client framing policy.
+
+This addition enlarges `http_parser` state. Rebuild all consumers with matching headers and implementation; mixing binary revisions is unsupported.
+
 - **`http_parser_init(http_parser* p, enum http_parser_type t)`** — reset a parser
   for `HTTP_REQUEST`, `HTTP_RESPONSE`, or `HTTP_BOTH`. Preserves `p->data`.
 - **`http_parser_settings_init(http_parser_settings* s)`** — zero the callback

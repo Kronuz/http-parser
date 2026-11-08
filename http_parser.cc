@@ -1390,11 +1390,13 @@ header_field_begin:
               goto error;
             }
 
-            if (parser->flags & F_CONTENTLENGTH) {
+            parser->duplicate_content_length = (parser->flags & F_CONTENTLENGTH) != 0;
+            if (parser->duplicate_content_length && !parser->allow_equal_content_length) {
               SET_ERRNO(HPE_UNEXPECTED_CONTENT_LENGTH);
               goto error;
             }
 
+            parser->previous_content_length = parser->content_length;
             parser->flags |= F_CONTENTLENGTH;
             parser->content_length = ch - '0';
             break;
@@ -1612,12 +1614,23 @@ header_field_begin:
       case s_header_value_lws:
       {
         if (ch == ' ' || ch == '\t') {
+          if (parser->allow_equal_content_length && parser->header_state == h_content_length) {
+            SET_ERRNO(HPE_INVALID_CONTENT_LENGTH);
+            goto error;
+          }
           UPDATE_STATE(s_header_value_start);
           REEXECUTE();
         }
 
         /* finished the header */
         switch (parser->header_state) {
+          case h_content_length:
+            if (parser->duplicate_content_length &&
+                parser->content_length != parser->previous_content_length) {
+              SET_ERRNO(HPE_UNEXPECTED_CONTENT_LENGTH);
+              goto error;
+            }
+            break;
           case h_connection_keep_alive:
             parser->flags |= F_CONNECTION_KEEP_ALIVE;
             break;
@@ -1647,6 +1660,10 @@ header_field_begin:
 
       case s_header_value_discard_lws:
       {
+        if (parser->allow_equal_content_length && parser->header_state == h_content_length) {
+          SET_ERRNO(HPE_INVALID_CONTENT_LENGTH);
+          goto error;
+        }
         if (ch == ' ' || ch == '\t') {
           UPDATE_STATE(s_header_value_discard_ws);
           break;
@@ -2066,6 +2083,12 @@ http_parser_init (http_parser *parser, enum http_parser_type t)
   parser->type = t;
   parser->state = (t == HTTP_REQUEST ? s_start_req : (t == HTTP_RESPONSE ? s_start_res : s_start_req_or_res));
   parser->http_errno = HPE_OK;
+}
+
+void
+http_parser_set_allow_equal_content_length(http_parser *parser, int enabled)
+{
+  parser->allow_equal_content_length = enabled != 0;
 }
 
 void

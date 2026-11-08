@@ -83,6 +83,19 @@ int main() {
 	std::printf("  body    : %s\n", d.body.c_str());
 	std::printf("  keep-alive: %s\n", http_should_keep_alive(&parser) ? "yes" : "no");
 
+	rule("equal Content-Length values require a per-parser opt-in");
+	const char* repeated = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 003\r\n\r\nabc";
+	for (bool allow : {false, true}) {
+		http_parser_init(&parser, HTTP_RESPONSE);
+		http_parser_set_allow_equal_content_length(&parser, allow);
+		d = {};
+		parser.data = &d;
+		http_parser_execute(&parser, &settings, repeated, std::strlen(repeated));
+		const bool accepted = HTTP_PARSER_ERRNO(&parser) == HPE_OK;
+		std::printf("  opt-in %s: %s\n", allow ? "enabled" : "disabled", accepted ? "accepted" : "rejected");
+		if (accepted != allow || (accepted && d.body != "abc")) return 1;
+	}
+
 	// --- 2. the parser is streaming: feed it one byte at a time --------------
 	rule("streaming: the same request fed byte by byte parses identically");
 	http_parser p2;
