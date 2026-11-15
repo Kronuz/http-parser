@@ -126,6 +126,8 @@ build/http_parser_bench 15 30
 
 ## 📚 Documentation
 
+- [Sixteen Bytes Too Far](https://kronuz.github.io/blog/http-parser/):
+  the Familiars post on why it exists and how it works.
 - [docs/API.md](docs/API.md): the entry points, the parser fields, and the
   callback rules.
 - [ARCHITECTURE.md](ARCHITECTURE.md): the state machine and Xapiand's additions.
