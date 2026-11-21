@@ -20,10 +20,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(enum_reflection)
 
 # --- Library target ---
-# http-parser is not header-only: http_parser.cc carries the state machine (its
-# states are the http_parser_execute_*.inc pieces), http_parser_url.cc the URL
-# parser and http_parser_api.cc the small public helpers, so they must be
-# compiled and linked. http_parser.h alone only declares
+# http-parser is not header-only: http_parser.cc carries the state machine,
+# http_parser_url.cc the URL parser and http_parser_api.cc the small public
+# helpers, so they must be compiled and linked. http_parser.h alone only declares
 # the API. It is compiled as C++ so it pulls in enum.h's C++ machinery and
 # matches the C++20 family; the file is C++-clean as written (the original
 # Joyent parser uses enum casts that are already C++-valid). The implementation

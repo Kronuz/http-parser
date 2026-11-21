@@ -1,4 +1,10 @@
-/* Header-name matchers, token tables, header character table and chunk-extension grammar (license: see http_parser.cc). */
+/* Token, hex and header-character tables, and the special header names the parser matches (license: see http_parser.cc). */
+#pragma once
+
+#include <stdint.h>
+
+#include "http_parser.h"
+#include "http_parser_chars.h"
 
 #define PROXY_CONNECTION "proxy-connection"
 #define CONNECTION "connection"
@@ -108,49 +114,3 @@ struct HeaderChar {
   }
 };
 static constexpr HeaderChar header_char{};
-
-/* Unless lenient, a chunk extension is checked byte by byte; parser->index is
- * where in the grammar the last byte left it. */
-enum chunk_ext_state {
-  CHUNK_EXT_START = 0,   /* after ';': a name follows */
-  CHUNK_EXT_NAME,        /* in the name */
-  CHUNK_EXT_EQUALS,      /* after '=': a token or a quoted string follows */
-  CHUNK_EXT_TOKEN,       /* in a token value */
-  CHUNK_EXT_QUOTED,      /* in a quoted string */
-  CHUNK_EXT_ESCAPE,      /* after a backslash in a quoted string */
-  CHUNK_EXT_CLOSED       /* after the closing quote */
-};
-
-/* Takes one byte of a chunk-size line after the size; 0 if it may not come here. */
-static int chunk_ext_char(http_parser *parser, char ch) {
-  const unsigned char c = (unsigned char) ch;
-  const int vchar = c > 0x20 && c != 0x7f;  /* VCHAR or obs-text */
-  switch (parser->index) {
-    case CHUNK_EXT_START:
-      if (!STRICT_TOKEN(ch)) return 0;
-      parser->index = CHUNK_EXT_NAME;
-      return 1;
-    case CHUNK_EXT_NAME:
-    case CHUNK_EXT_TOKEN:
-      if (STRICT_TOKEN(ch)) return 1;
-      if (ch == '=' && parser->index == CHUNK_EXT_NAME) { parser->index = CHUNK_EXT_EQUALS; return 1; }
-      if (ch == ';') { parser->index = CHUNK_EXT_START; return 1; }
-      return ch == CR;
-    case CHUNK_EXT_EQUALS:
-      if (ch == '"') { parser->index = CHUNK_EXT_QUOTED; return 1; }
-      if (!STRICT_TOKEN(ch)) return 0;
-      parser->index = CHUNK_EXT_TOKEN;
-      return 1;
-    case CHUNK_EXT_QUOTED:
-      if (ch == '"') { parser->index = CHUNK_EXT_CLOSED; return 1; }
-      if (ch == '\\') { parser->index = CHUNK_EXT_ESCAPE; return 1; }
-      return vchar || ch == ' ' || ch == '\t';
-    case CHUNK_EXT_ESCAPE:
-      parser->index = CHUNK_EXT_QUOTED;
-      return vchar || ch == ' ' || ch == '\t';
-    case CHUNK_EXT_CLOSED:
-      if (ch == ';') { parser->index = CHUNK_EXT_START; return 1; }
-      return ch == CR;
-  }
-  return 0;
-}
