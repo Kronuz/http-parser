@@ -7,12 +7,12 @@ invariants see `AGENTS.md`.
 
 ## Shape
 
-Two headers and one compiled state machine:
+Two public headers, three compiled files and internal headers (docs/source-layout.md):
 
 ```
   http_parser.h        declares the API (init, execute, settings, helpers) and the parser/settings structs
   http_parser_enums.h  the method / status / errno / state / header-state enums, built with enum.h's ENUM()
-  http_parser.cc       the state machine: http_parser_execute() plus the helpers
+  http_parser.cc       the state machine: http_parser_execute(); http_parser_url.cc and http_parser_api.cc hold the URL parser and the public helpers
   likely.h             self-contained likely()/unlikely() branch hints (vendored, no config.h)
 ```
 

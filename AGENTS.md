@@ -10,7 +10,7 @@ easy to fall into.
 ```
 http_parser.h         Declares the API (init, settings, execute, helpers) and the http_parser / http_parser_settings structs. Header. Verbatim from Xapiand.
 http_parser_enums.h   The method / status / errno / state / header-state enums, defined with enum.h's ENUM() macro. Includes "enum.h". Verbatim from Xapiand.
-http_parser.cc        The streaming state machine: http_parser_execute() plus helpers. From Xapiand, with the bulk scans listed under "Standalone vs. Xapiand". Includes "likely.h".
+http_parser.cc        The streaming state machine: http_parser_execute(); the URL parser and the public helpers are http_parser_url.cc and http_parser_api.cc, shared headers http_parser_internal.h, http_parser_chars.h, http_parser_tables.h. From Xapiand, with the bulk scans listed under "Standalone vs. Xapiand". Includes "likely.h".
 likely.h              Self-contained likely()/unlikely() branch hints. Vendored on extraction (no config.h coupling).
 test/test.cc          Runnable smoke test: GET, POST+body, byte-by-byte streaming, chunked across two buffers, malformed method, keep-alive.
 test/diff.cc          Differential test (CTest `http_parser_diff`): the parser against test/http_parser_old.cc over a corpus, mutations, sweeps and random messages; compares every callback and every parser field.
@@ -32,7 +32,7 @@ docs/http-parser.d2   The README diagram's source (docs/http-parser.svg is rende
 ARCHITECTURE.md       Internal design of the streaming state machine, callbacks, body handling, enums.
 ```
 
-This is not header-only. `http_parser.cc` must be compiled and linked; the
+This is not header-only. `http_parser.cc`, `http_parser_url.cc` and `http_parser_api.cc` must be compiled and linked; the
 headers only declare the API and the enums. The CMake target is a `STATIC` library
 that links `enum-reflection` so `"enum.h"` resolves.
 

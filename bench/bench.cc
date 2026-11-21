@@ -6,7 +6,7 @@
 // difference smaller than it is not a result.
 //
 //   c++ -std=c++20 -O3 -DNDEBUG -mcpu=native -I. -Itest -I<enum-reflection> \
-//       bench/bench.cc http_parser.cc test/http_parser_old.cc [-DHAVE_LLHTTP -lllhttp] -o bench
+//       bench/bench.cc http_parser.cc http_parser_api.cc http_parser_url.cc test/http_parser_old.cc [-DHAVE_LLHTTP -lllhttp] -o bench
 //   run it under `quiet strict`.
 //
 // Usage: bench [trials] [target_ms] [workload-substring]

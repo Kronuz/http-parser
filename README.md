@@ -39,7 +39,7 @@ reflective enums and Xapiand's extra verbs.
 ## 📦 Installation
 
 Requires a C++20 compiler and CMake 3.14 or newer; it fetches enum-reflection.
-It compiles one source file, `http_parser.cc`. CI builds it on Linux (x86_64,
+It compiles three source files: `http_parser.cc`, `http_parser_url.cc` and `http_parser_api.cc`. CI builds it on Linux (x86_64,
 arm64), macOS (arm64, x86_64), and FreeBSD, plus ASan, UBSan, and TSan builds, a
 build without the vector code, a non-strict build, and a nightly fuzz run; the tests
 include llhttp's conformance suite (`test/conformance.cc`).

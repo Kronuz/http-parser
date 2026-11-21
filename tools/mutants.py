@@ -147,18 +147,27 @@ def deps_includes(build):
     return ["-I" + d for d in sorted(glob.glob(os.path.join(build, "_deps", "*-src")))]
 
 
+SOURCES = ("http_parser.cc", "http_parser_internal.h", "http_parser_chars.h", "http_parser_tables.h")
+
+
 def run_mutant(m, args, tmp, base_objs, includes):
     name, where, old, new = m
-    src = open(os.path.join(ROOT, "http_parser.cc")).read()
-    if src.count(old) != 1:
-        return name, "BAD", "snippet found %d times" % src.count(old)
+    # the library is copied whole into the mutant's directory, so the includes of the .cc files
+    # and the headers all see the mutated file
+    srcs = {f: open(os.path.join(ROOT, f)).read() for f in SOURCES}
+    found = sum(srcs[f].count(old) for f in SOURCES)
+    if found != 1:
+        return name, "BAD", "snippet found %d times" % found
+    hit = [f for f in SOURCES if old in srcs[f]]
     d = os.path.join(tmp, name)
     os.makedirs(d)
-    cc = os.path.join(d, "http_parser.cc")
-    open(cc, "w").write(src.replace(old, new))
+    for f in glob.glob(os.path.join(ROOT, "http_parser*.[ch]*")) + [os.path.join(ROOT, "likely.h")]:
+        shutil.copy(f, d)
+    open(os.path.join(d, hit[0]), "w").write(srcs[hit[0]].replace(old, new))
+    cc = [os.path.join(d, f) for f in ("http_parser.cc", "http_parser_api.cc", "http_parser_url.cc")]
     exe = os.path.join(d, "diff")
     cmd = ([args.cxx, "-std=c++20", "-O1", "-g", "-I" + ROOT, "-I" + os.path.join(ROOT, "test")] + includes +
-           args.flags + [cc] + base_objs + ["-o", exe])
+           args.flags + cc + base_objs + ["-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         return name, "BAD", "does not compile:\n" + r.stderr[-1500:]
