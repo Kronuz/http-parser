@@ -1,6 +1,8 @@
 /* Character classes, the URL character table and parse_url_char() (license: see http_parser.cc). */
 #pragma once
 
+#include "http_parser_internal.h"
+
 #if HTTP_PARSER_STRICT
 # define T(v) 0
 #else
