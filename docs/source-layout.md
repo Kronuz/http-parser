@@ -1,39 +1,26 @@
 # Source layout
 
-No source file is over 1,000 lines. `http_parser.h` is the include users name; the `.cc` files are
-the library target's sources. The `.inc` files are not compiled alone: each is included at one
-point of the file that names it, so the compiler sees the same translation unit as before. The
-parse loop is a single function with `goto` between its states, so its states cannot be separate
-functions; they are included inside it, which also keeps the inlining the loop relies on.
-
-## Library
+`http_parser.h` is the include users name. The `.cc` files are the library target's sources; the
+`.h` files after it are internal and compile alone. Rules: cpp-libraries' `docs/SPLITTING.md`.
 
 | File | Holds |
 |---|---|
 | `http_parser.h`, `http_parser_enums.h`, `likely.h` | The public API, its enums, `likely`/`unlikely`. |
-| `http_parser.cc` | `http_parser_execute()` and the parse loop's frame: setup, the byte loop, the epilogue. |
-| `http_parser_execute_response.inc` | Loop states for the response line (start, version, status code, reason). |
-| `http_parser_execute_request.inc` | Loop states for the request line (method, URL, version). |
-| `http_parser_execute_headers.inc` | Loop states for header fields and values and the end of the headers. |
-| `http_parser_execute_body.inc` | Loop states for identity and chunked bodies and message completion. |
-| `http_parser_macros.inc` | The loop's state, callback and byte-stepping macros. |
-| `http_parser_tables.inc` | Header-name matchers, token and hex tables, the header character table, the chunk-extension grammar. |
-| `http_parser_scan.inc` | The bulk scans (NEON/SSE2): end of line, end of header value, end of a URL run. |
-| `http_parser_internal.h` | Includes, SIMD selection, small macros, `method_strings` and the inlined `message_needs_eof`/`should_keep_alive`. |
-| `http_parser_chars.h` | Character classes, the URL character table and `parse_url_char()`. |
-| `http_parser_api.cc` | `http_status_str`, `http_method_str`, `http_errno_*`, init, pause, version and the public wrappers. |
+| `http_parser.cc` | `http_parser_execute()`: the parse loop's macros, the bulk scans (NEON/SSE2) and the loop itself. |
 | `http_parser_url.cc` | `http_parser_parse_url()` and the host grammar. |
+| `http_parser_api.cc` | `http_status_str`, `http_method_str`, `http_errno_*`, init, pause, version and the public wrappers. |
+| `http_parser_internal.h` | Includes, SIMD selection, small macros, `method_strings` and the inlined `message_needs_eof`/`should_keep_alive`. |
+| `http_parser_chars.h` | Character classes, the URL character table and `parse_url_char()`, shared by the loop and the URL parser. |
+| `http_parser_tables.h` | The token and hex tables, the header character table and the special header names the loop matches. |
 
-## Differential test
+## Kept whole
 
-`test/diff.cc` holds `main()`; the rest is included inside its anonymous namespace.
-
-| File | Holds |
-|---|---|
-| `test/diff.cc` | The file's overview, the sections of `main()`: corpus, prefixes, mutations, pauses, SIMD sweep, random messages. |
-| `test/diff_harness.inc` | Snapshots, event recording, the driver, the comparison and the hardening-change rules. |
-| `test/diff_corpus.inc` | The hand-written corpus and the 80 KB header-limit cases. |
-| `test/diff_random.inc` | Random grammar-built messages and their mutations. |
-| `test/diff_harden.inc` | The hardening sweep helper. |
-
-`test/http_parser_old.cc` is the frozen reference and is never edited or split.
+- `http_parser.cc` (about 2,000 lines): `execute<lenient>()` is one state machine, one function with
+  `goto` between its states and locals every state reads, and the compiler inlines the scans
+  and `parse_url_char()` into it. Its states are not units someone opens alone, and a cut
+  inside the function cannot be read or compiled alone. The macros and the scans exist for the loop
+  only and stay next to it.
+- `test/diff.cc` (1,004 lines): one differential test of one subject: its harness, corpus,
+  random messages and sweeps share the anonymous namespace's state, so topic files would need
+  that state exported for no gain.
+- `test/http_parser_old.cc` is the frozen reference and is never edited or split.
