@@ -16,8 +16,7 @@
 ## Kept whole
 
 - `http_parser.cc` (about 2,000 lines): `execute<lenient>()` is one state machine, one function with
-  `goto` between its states and locals every state reads, and the compiler inlines the scans
-  and `parse_url_char()` into it. Its states are not units someone opens alone, and a cut
+  `goto` between its states and locals every state reads. Its states are not units someone opens alone, and a cut
   inside the function cannot be read or compiled alone. The macros and the scans exist for the loop
   only and stay next to it.
 - `test/diff.cc` (1,004 lines): one differential test of one subject: its harness, corpus,
